@@ -15,6 +15,7 @@ pub use highlight::Highlighter;
 use crate::core::Result;
 use crate::events::Event;
 use crate::state::{AppState, PanelId};
+use crate::ui::ScrollBar;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Direction as LayoutDirection, Layout, Rect},
@@ -23,6 +24,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Tabs},
     Frame,
 };
+use std::cell::RefCell;
 use std::path::PathBuf;
 
 /// Single file tab state
@@ -99,6 +101,12 @@ pub struct EditorPanel {
     highlighter: Highlighter,
     /// Visible height (updated on render)
     visible_height: usize,
+    /// Tab bar area for mouse click detection (interior mutability for render)
+    tab_bar_area: RefCell<Option<Rect>>,
+    /// Calculated tab boundaries (start_x, end_x) for each tab
+    tab_boundaries: RefCell<Vec<(u16, u16)>>,
+    /// Content area for scroll bar click detection
+    content_area: RefCell<Rect>,
 }
 
 impl Default for EditorPanel {
@@ -115,6 +123,9 @@ impl EditorPanel {
             active_tab: 0,
             highlighter: Highlighter::new(),
             visible_height: 20,
+            tab_bar_area: RefCell::new(None),
+            tab_boundaries: RefCell::new(Vec::new()),
+            content_area: RefCell::new(Rect::default()),
         }
     }
 
@@ -495,6 +506,14 @@ impl EditorPanel {
         self.scroll_down(self.visible_height.saturating_sub(2));
     }
 
+    fn scroll_to_bottom(&mut self) {
+        let tab = self.active_tab_mut();
+        let max_scroll = tab.lines.len().saturating_sub(1);
+        tab.scroll.0 = max_scroll;
+        tab.cursor.0 = tab.lines.len().saturating_sub(1);
+        tab.cursor.1 = 0;
+    }
+
     fn ensure_cursor_visible(&mut self) {
         let visible_height = self.visible_height;
         let tab = &mut self.tabs[self.active_tab];
@@ -551,14 +570,20 @@ impl super::Panel for EditorPanel {
     fn handle_input(&mut self, event: &Event, state: &mut AppState) -> Result<bool> {
         if let Event::Key(key) = event {
             // Tab navigation keys (work in all modes)
+            // Alt+] on Windows/Linux, Cmd+] on Mac (SUPER modifier)
             match (key.code, key.modifiers) {
-                // Ctrl+Tab: next tab
-                (KeyCode::Tab, m) if m.contains(KeyModifiers::CONTROL) => {
-                    if m.contains(KeyModifiers::SHIFT) {
-                        self.prev_tab();
-                    } else {
-                        self.next_tab();
-                    }
+                // Alt+] or Cmd+]: next tab
+                (KeyCode::Char(']'), m)
+                    if m.contains(KeyModifiers::ALT) || m.contains(KeyModifiers::SUPER) =>
+                {
+                    self.next_tab();
+                    return Ok(true);
+                }
+                // Alt+[ or Cmd+[: previous tab
+                (KeyCode::Char('['), m)
+                    if m.contains(KeyModifiers::ALT) || m.contains(KeyModifiers::SUPER) =>
+                {
+                    self.prev_tab();
                     return Ok(true);
                 }
                 // Ctrl+W: close current tab
@@ -643,6 +668,7 @@ impl super::Panel for EditorPanel {
                         Ok(true)
                     }
                     KeyCode::Char('g') => {
+                        // Go to beginning of file
                         let tab = self.active_tab_mut();
                         tab.cursor = (0, 0);
                         tab.scroll.0 = 0;
@@ -717,6 +743,64 @@ impl super::Panel for EditorPanel {
                 }
                 _ => Ok(false),
             }
+        } else if let Event::Mouse(mouse) = event {
+            match mouse.kind {
+                // Handle mouse click on tabs or scroll bar
+                crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                    let x = mouse.column;
+                    let y = mouse.row;
+
+                    // Check for scroll bar clicks first
+                    let content = *self.content_area.borrow();
+                    let tab = self.active_tab();
+                    let scrollbar = ScrollBar::new(tab.scroll.0, self.visible_height, tab.lines.len());
+
+                    if scrollbar.is_arrow_click(x, y, content) {
+                        self.scroll_to_bottom();
+                        return Ok(true);
+                    }
+                    if let Some(page_up) = scrollbar.track_click(x, y, content) {
+                        if page_up {
+                            self.scroll_page_up();
+                        } else {
+                            self.scroll_page_down();
+                        }
+                        return Ok(true);
+                    }
+
+                    // Check if click is in tab bar area (copy values to avoid borrow conflicts)
+                    let tab_area = *self.tab_bar_area.borrow();
+                    let clicked_tab = if let Some(area) = tab_area {
+                        if y == area.y && x >= area.x && x < area.x + area.width {
+                            // Find which tab was clicked
+                            let boundaries = self.tab_boundaries.borrow();
+                            boundaries.iter().enumerate()
+                                .find(|(_, &(start_x, end_x))| x >= start_x && x < end_x)
+                                .map(|(idx, _)| idx)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    if let Some(idx) = clicked_tab {
+                        self.switch_tab(idx);
+                        return Ok(true);
+                    }
+                    Ok(false)
+                }
+                // Handle mouse scroll
+                crossterm::event::MouseEventKind::ScrollUp => {
+                    self.scroll_up(3);
+                    Ok(true)
+                }
+                crossterm::event::MouseEventKind::ScrollDown => {
+                    self.scroll_down(3);
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
         } else {
             Ok(false)
         }
@@ -749,6 +833,27 @@ impl super::Panel for EditorPanel {
         let tab_bar_area = chunks[0];
         let content_area = chunks[1];
         let visible_height = content_area.height as usize;
+
+        // Store content area for scroll bar click detection
+        *self.content_area.borrow_mut() = content_area;
+
+        // Store tab bar area for mouse click detection
+        *self.tab_bar_area.borrow_mut() = Some(tab_bar_area);
+
+        // Calculate and store tab boundaries for click detection
+        {
+            let mut boundaries = self.tab_boundaries.borrow_mut();
+            boundaries.clear();
+            let mut current_x = tab_bar_area.x;
+            for tab in &self.tabs {
+                let name = tab.display_name();
+                let modified = if tab.modified { "*" } else { "" };
+                let title = format!(" {}{} ", name, modified);
+                let tab_width = title.len() as u16 + 1; // +1 for divider
+                boundaries.push((current_x, current_x + tab_width));
+                current_x += tab_width;
+            }
+        }
 
         // Render outer block
         frame.render_widget(block, area);
@@ -836,6 +941,10 @@ impl super::Panel for EditorPanel {
 
         let paragraph = Paragraph::new(lines);
         frame.render_widget(paragraph, content_area);
+
+        // Render scroll bar
+        let scrollbar = ScrollBar::new(scroll_y, visible_height, tab.lines.len());
+        scrollbar.render(frame, content_area, focused);
 
         // Show cursor if focused and in view
         if focused {

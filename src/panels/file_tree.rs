@@ -3,6 +3,7 @@
 use crate::core::Result;
 use crate::events::Event;
 use crate::state::{AppState, PanelId};
+use crate::ui::ScrollBar;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
     layout::Rect,
@@ -11,6 +12,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 /// File or directory entry in the tree
@@ -39,6 +41,12 @@ pub struct FileTreePanel {
 
     /// File to open (set when Enter pressed on file)
     pub pending_open: Option<PathBuf>,
+
+    /// Inner area for mouse click detection (updated during render)
+    inner_area: Cell<Rect>,
+
+    /// Current scroll offset for mouse click detection (updated during render)
+    render_scroll: Cell<usize>,
 }
 
 impl FileTreePanel {
@@ -50,6 +58,8 @@ impl FileTreePanel {
             selected: 0,
             scroll: 0,
             pending_open: None,
+            inner_area: Cell::new(Rect::default()),
+            render_scroll: Cell::new(0),
         };
         panel.refresh();
         panel
@@ -205,6 +215,14 @@ impl FileTreePanel {
             }
         }
     }
+
+    /// Scroll to bottom (select last entry)
+    fn scroll_to_bottom(&mut self) {
+        if !self.entries.is_empty() {
+            self.selected = self.entries.len() - 1;
+            self.auto_open_if_file();
+        }
+    }
 }
 
 impl super::Panel for FileTreePanel {
@@ -263,6 +281,76 @@ impl super::Panel for FileTreePanel {
                 }
                 _ => Ok(false),
             }
+        } else if let Event::Mouse(mouse) = event {
+            match mouse.kind {
+                // Handle mouse click to select entry
+                crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                    let x = mouse.column;
+                    let y = mouse.row;
+                    let inner = self.inner_area.get();
+                    let scroll = self.render_scroll.get();
+
+                    // Check for scroll bar clicks first
+                    let scrollbar = ScrollBar::new(scroll, inner.height as usize, self.entries.len());
+                    if scrollbar.is_arrow_click(x, y, inner) {
+                        // Down arrow clicked - scroll to bottom
+                        self.scroll_to_bottom();
+                        return Ok(true);
+                    }
+                    if let Some(page_up) = scrollbar.track_click(x, y, inner) {
+                        // Track clicked - page up or down
+                        let page_size = inner.height as usize;
+                        if page_up {
+                            for _ in 0..page_size {
+                                self.move_up();
+                            }
+                        } else {
+                            for _ in 0..page_size {
+                                self.move_down();
+                            }
+                        }
+                        return Ok(true);
+                    }
+
+                    // Check if click is inside the inner area (excluding scroll bar column)
+                    if x >= inner.x && x < inner.x + inner.width.saturating_sub(1)
+                        && y >= inner.y && y < inner.y + inner.height
+                    {
+                        // Calculate which entry was clicked
+                        let row = (y - inner.y) as usize;
+                        let clicked_idx = scroll + row;
+
+                        if clicked_idx < self.entries.len() {
+                            self.selected = clicked_idx;
+
+                            // Handle the selection (open file or toggle directory)
+                            if let Some(entry) = self.entries.get(self.selected) {
+                                if entry.is_dir {
+                                    self.toggle_selected();
+                                } else {
+                                    self.pending_open = Some(entry.path.clone());
+                                }
+                            }
+                            return Ok(true);
+                        }
+                    }
+                    Ok(false)
+                }
+                // Handle mouse scroll
+                crossterm::event::MouseEventKind::ScrollUp => {
+                    for _ in 0..3 {
+                        self.move_up();
+                    }
+                    Ok(true)
+                }
+                crossterm::event::MouseEventKind::ScrollDown => {
+                    for _ in 0..3 {
+                        self.move_down();
+                    }
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
         } else {
             Ok(false)
         }
@@ -287,6 +375,10 @@ impl super::Panel for FileTreePanel {
         } else if self.selected >= scroll + visible_height {
             scroll = self.selected - visible_height + 1;
         }
+
+        // Store for mouse click detection
+        self.inner_area.set(inner);
+        self.render_scroll.set(scroll);
 
         // Generate scroll indicator
         let scroll_info = crate::ui::scroll::scroll_indicator(scroll, visible_height, self.entries.len());
@@ -352,6 +444,10 @@ impl super::Panel for FileTreePanel {
 
         let paragraph = Paragraph::new(lines).block(block);
         frame.render_widget(paragraph, area);
+
+        // Render scroll bar
+        let scrollbar = ScrollBar::new(scroll, visible_height, self.entries.len());
+        scrollbar.render(frame, inner, focused);
     }
 }
 

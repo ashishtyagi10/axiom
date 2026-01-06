@@ -4,7 +4,7 @@ use crate::core::Result;
 use crate::events::Event;
 use crate::llm::{LlmProvider, OllamaProvider};
 use crate::state::{AppState, PanelId};
-use crate::ui::render_markdown;
+use crate::ui::{render_markdown, ScrollBar};
 use crossbeam_channel::Sender;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
@@ -14,6 +14,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
+use std::cell::Cell;
 use std::sync::Arc;
 
 /// File modification parsed from LLM response
@@ -134,6 +135,15 @@ pub struct ChatPanel {
 
     /// Event sender for LLM responses
     event_tx: Option<Sender<Event>>,
+
+    /// Scroll offset for chat history (0 = bottom)
+    scroll_offset: usize,
+
+    /// History area for scroll bar click detection (updated during render)
+    history_area: Cell<Rect>,
+
+    /// Total history lines count (updated during render)
+    history_line_count: Cell<usize>,
 }
 
 impl ChatPanel {
@@ -150,7 +160,15 @@ impl ChatPanel {
             streaming_buffer: String::new(),
             llm: Arc::new(OllamaProvider::default()),
             event_tx: Some(event_tx),
+            scroll_offset: 0,
+            history_area: Cell::new(Rect::default()),
+            history_line_count: Cell::new(0),
         }
+    }
+
+    /// Scroll to bottom of chat history
+    fn scroll_to_bottom(&mut self) {
+        self.scroll_offset = 0;
     }
 
     /// Add a user message and trigger AI response
@@ -166,6 +184,9 @@ impl ChatPanel {
             role: Role::User,
             content: content.clone(),
         });
+
+        // Reset scroll to bottom when user sends message
+        self.scroll_offset = 0;
 
         // Start generating
         self.is_generating = true;
@@ -192,6 +213,8 @@ impl ChatPanel {
     /// Append streaming chunk
     pub fn append_chunk(&mut self, chunk: &str) {
         self.streaming_buffer.push_str(chunk);
+        // Reset scroll to bottom when new content arrives
+        self.scroll_offset = 0;
     }
 
     /// Complete streaming response
@@ -482,6 +505,53 @@ impl super::Panel for ChatPanel {
                 self.is_generating = false;
                 Ok(true)
             }
+            Event::Mouse(mouse) => {
+                match mouse.kind {
+                    crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                        let x = mouse.column;
+                        let y = mouse.row;
+                        let area = self.history_area.get();
+                        let total = self.history_line_count.get();
+                        let visible = area.height as usize;
+
+                        // Chat uses inverted scroll (scroll_offset 0 = at bottom)
+                        // Convert to normal scroll position for ScrollBar
+                        let max_scroll = total.saturating_sub(visible);
+                        let normal_scroll = max_scroll.saturating_sub(self.scroll_offset);
+
+                        let scrollbar = ScrollBar::new(normal_scroll, visible, total);
+
+                        if scrollbar.is_arrow_click(x, y, area) {
+                            // Down arrow = scroll to bottom (newest)
+                            self.scroll_to_bottom();
+                            return Ok(true);
+                        }
+                        if let Some(page_up) = scrollbar.track_click(x, y, area) {
+                            let page_size = visible;
+                            if page_up {
+                                // Page up = see older messages = increase offset
+                                self.scroll_offset = self.scroll_offset.saturating_add(page_size);
+                            } else {
+                                // Page down = see newer messages = decrease offset
+                                self.scroll_offset = self.scroll_offset.saturating_sub(page_size);
+                            }
+                            return Ok(true);
+                        }
+                        Ok(false)
+                    }
+                    crossterm::event::MouseEventKind::ScrollUp => {
+                        // Scroll up (increase offset to see older messages)
+                        self.scroll_offset = self.scroll_offset.saturating_add(3);
+                        Ok(true)
+                    }
+                    crossterm::event::MouseEventKind::ScrollDown => {
+                        // Scroll down (decrease offset toward newest messages)
+                        self.scroll_offset = self.scroll_offset.saturating_sub(3);
+                        Ok(true)
+                    }
+                    _ => Ok(false),
+                }
+            }
             _ => Ok(false),
         }
     }
@@ -505,16 +575,23 @@ impl super::Panel for ChatPanel {
         let history_inner = temp_block.inner(chunks[0]);
         let history_lines = self.format_history(history_inner.width);
 
-        // Auto-scroll to bottom
+        // Store for scroll bar click detection
+        self.history_area.set(history_inner);
+        self.history_line_count.set(history_lines.len());
+
+        // Calculate scroll position with manual offset support
         let visible_height = history_inner.height as usize;
-        let scroll = if history_lines.len() > visible_height {
-            history_lines.len() - visible_height
+        let history_len = history_lines.len();
+        let max_scroll = if history_len > visible_height {
+            history_len - visible_height
         } else {
             0
         };
+        // scroll_offset is from bottom (0 = at bottom, N = N lines up from bottom)
+        let scroll = max_scroll.saturating_sub(self.scroll_offset).min(max_scroll);
 
         // Generate scroll indicator and model info
-        let scroll_info = crate::ui::scroll::scroll_indicator(scroll, visible_height, history_lines.len());
+        let scroll_info = crate::ui::scroll::scroll_indicator(scroll, visible_height, history_len);
         let model_name = self.llm.model();
         let status = if self.is_generating { " ⏳" } else { "" };
         let title = format!(" Chat ({}){}{}  ", model_name, status, scroll_info);
@@ -531,6 +608,10 @@ impl super::Panel for ChatPanel {
             .scroll((scroll as u16, 0));
 
         frame.render_widget(history, chunks[0]);
+
+        // Render scroll bar for history area
+        let scrollbar = ScrollBar::new(scroll, visible_height, history_len);
+        scrollbar.render(frame, history_inner, focused);
 
         // Input area with text wrapping
         let input_block = Block::default()
@@ -557,15 +638,28 @@ impl super::Panel for ChatPanel {
             let lines: Vec<&str> = text_before_cursor.split('\n').collect();
             for (i, line) in lines.iter().enumerate() {
                 if i < lines.len() - 1 {
-                    // Not the last segment - add wrapped lines + 1 for newline
-                    row += (line.len() / inner_width) as u16 + 1;
+                    // Lines before the last: each takes ceil(len/width) rows, minimum 1 for empty lines
+                    let line_rows = if line.is_empty() {
+                        1
+                    } else {
+                        (line.len() + inner_width - 1) / inner_width
+                    };
+                    row += line_rows as u16;
                 }
             }
 
             // Last segment determines column and any additional wrapped rows
             let last_segment = lines.last().unwrap_or(&"");
-            row += (last_segment.len() / inner_width) as u16;
-            let col = (last_segment.len() % inner_width) as u16;
+            let col = if last_segment.is_empty() {
+                0
+            } else {
+                (last_segment.len() % inner_width) as u16
+            };
+            row += if last_segment.is_empty() {
+                0
+            } else {
+                ((last_segment.len() - 1) / inner_width) as u16
+            };
 
             let cursor_x = input_inner.x + col;
             let cursor_y = input_inner.y + row;

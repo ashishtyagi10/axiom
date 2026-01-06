@@ -6,6 +6,8 @@ use crate::core::Result;
 use crate::events::Event;
 use crate::state::{AppState, PanelId};
 use crate::terminal::Pty;
+use crate::ui::ScrollBar;
+use std::cell::Cell;
 use crossbeam_channel::Sender;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
@@ -32,6 +34,9 @@ pub struct TerminalPanel {
 
     /// Scroll offset from bottom
     scroll_offset: u16,
+
+    /// Inner area for scroll bar click detection (updated during render)
+    inner_area: Cell<Rect>,
 }
 
 impl TerminalPanel {
@@ -53,6 +58,7 @@ impl TerminalPanel {
             parser,
             size: (cols, rows),
             scroll_offset: 0,
+            inner_area: Cell::new(Rect::default()),
         })
     }
 
@@ -112,6 +118,11 @@ impl TerminalPanel {
         }
 
         lines
+    }
+
+    /// Scroll to bottom (show current terminal output)
+    fn scroll_to_bottom(&mut self) {
+        self.scroll_offset = 0;
     }
 
     /// Write keyboard input to PTY
@@ -189,6 +200,58 @@ impl super::Panel for TerminalPanel {
                 self.process_output(data);
                 Ok(true)
             }
+            Event::Mouse(mouse) => {
+                match mouse.kind {
+                    crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                        let x = mouse.column;
+                        let y = mouse.row;
+                        let area = self.inner_area.get();
+
+                        // Get scrollback info for scroll bar
+                        let parser = self.parser.read();
+                        let screen = parser.screen();
+                        let scrollback_len = screen.scrollback();
+                        let (rows, _cols) = screen.size();
+                        drop(parser);
+
+                        let visible = rows as usize;
+                        let total = visible + scrollback_len;
+
+                        // Terminal scroll: offset 0 = at bottom, max = at top
+                        let normal_scroll = total.saturating_sub(visible).saturating_sub(self.scroll_offset as usize);
+
+                        let scrollbar = ScrollBar::new(normal_scroll, visible, total);
+
+                        if scrollbar.is_arrow_click(x, y, area) {
+                            self.scroll_to_bottom();
+                            return Ok(true);
+                        }
+                        if let Some(page_up) = scrollbar.track_click(x, y, area) {
+                            let page_size = visible as u16;
+                            if page_up {
+                                // Page up = see older output = increase offset
+                                self.scroll_offset = self.scroll_offset.saturating_add(page_size);
+                            } else {
+                                // Page down = see newer output = decrease offset
+                                self.scroll_offset = self.scroll_offset.saturating_sub(page_size);
+                            }
+                            return Ok(true);
+                        }
+                        Ok(false)
+                    }
+                    crossterm::event::MouseEventKind::ScrollUp => {
+                        // Scroll up to see older output
+                        self.scroll_offset = self.scroll_offset.saturating_add(3);
+                        Ok(true)
+                    }
+                    crossterm::event::MouseEventKind::ScrollDown => {
+                        // Scroll down to see newer output
+                        self.scroll_offset = self.scroll_offset.saturating_sub(3);
+                        Ok(true)
+                    }
+                    _ => Ok(false),
+                }
+            }
             _ => Ok(false),
         }
     }
@@ -223,12 +286,25 @@ impl super::Panel for TerminalPanel {
 
         let inner = block.inner(area);
 
+        // Store for scroll bar click detection
+        self.inner_area.set(inner);
+
         // Get terminal content
         let lines = self.get_screen_lines();
 
         let paragraph = Paragraph::new(lines).block(block);
 
         frame.render_widget(paragraph, area);
+
+        // Render scroll bar if there's scrollback
+        let total = (inner.height as usize) + scrollback_len;
+        let visible = inner.height as usize;
+        if scrollback_len > 0 {
+            // Terminal scroll: offset 0 = at bottom
+            let normal_scroll = total.saturating_sub(visible).saturating_sub(self.scroll_offset as usize);
+            let scrollbar = ScrollBar::new(normal_scroll, visible, total);
+            scrollbar.render(frame, inner, focused);
+        }
 
         // Draw cursor if focused and cursor is visible
         // Some applications (like Claude Code) draw their own cursor and hide the terminal cursor

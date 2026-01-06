@@ -10,3 +10,4 @@ pub use layout::{get_layout, get_layout_with_focus, AppLayout};
 pub use markdown::render_markdown;
 pub use model_selector::ModelSelector;
 pub use render::render;
+pub use scroll::ScrollBar;

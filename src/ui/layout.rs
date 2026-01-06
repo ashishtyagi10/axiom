@@ -68,10 +68,10 @@ pub fn get_layout_with_focus(area: Rect, focused: Option<PanelId>) -> AppLayout 
     let status = main_chunks[1];
 
     // Determine layout percentages based on focus
+    // File tree stays fixed width, only chat expands horizontally
     let (file_tree_pct, middle_pct, chat_pct) = match focused {
         Some(PanelId::CHAT) => (15, 45, 40),      // Chat expanded
-        Some(PanelId::FILE_TREE) => (30, 50, 20), // File tree expanded
-        _ => (20, 60, 20),                         // Default
+        _ => (20, 60, 20),                         // Default (file tree stays 20%)
     };
 
     // Horizontal split: file tree | middle | chat
@@ -114,5 +114,22 @@ pub fn get_layout_with_focus(area: Rect, focused: Option<PanelId>) -> AppLayout 
         terminal,
         chat,
         status,
+    }
+}
+
+impl AppLayout {
+    /// Determine which panel contains the given coordinates
+    pub fn panel_at(&self, x: u16, y: u16) -> Option<PanelId> {
+        if self.file_tree.contains((x, y).into()) {
+            Some(PanelId::FILE_TREE)
+        } else if self.editor.contains((x, y).into()) {
+            Some(PanelId::EDITOR)
+        } else if self.terminal.contains((x, y).into()) {
+            Some(PanelId::TERMINAL)
+        } else if self.chat.contains((x, y).into()) {
+            Some(PanelId::CHAT)
+        } else {
+            None
+        }
     }
 }

@@ -181,15 +181,25 @@ fn handle_event(
                 return Ok(false);
             }
 
-            // Tab: Cycle focus
-            if key.code == KeyCode::Tab && !state.input_mode.is_editing() && !state.input_mode.is_modal() {
+            // Tab (without modifiers): Cycle focus
+            // Ctrl+Tab is reserved for panel-specific use (e.g., editor tabs)
+            if key.code == KeyCode::Tab
+                && key.modifiers.is_empty()
+                && !state.input_mode.is_editing()
+                && !state.input_mode.is_modal()
+            {
                 state.focus.next();
                 panels.handle_focus_change(state.focus.current(), screen_area);
                 return Ok(false);
             }
 
-            // Backtab (Shift+Tab): Cycle focus backwards
-            if key.code == KeyCode::BackTab && !state.input_mode.is_editing() && !state.input_mode.is_modal() {
+            // Backtab/Shift+Tab (without Ctrl): Cycle focus backwards
+            // Ctrl+Shift+Tab is reserved for panel-specific use (e.g., editor tabs)
+            if key.code == KeyCode::BackTab
+                && !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !state.input_mode.is_editing()
+                && !state.input_mode.is_modal()
+            {
                 state.focus.prev();
                 panels.handle_focus_change(state.focus.current(), screen_area);
                 return Ok(false);
@@ -258,6 +268,50 @@ fn handle_event(
                     state.input_mode.open_modal("model_selector");
                     return Ok(false);
                 }
+            }
+
+            // Get current layout to determine panel areas
+            let layout = ui::get_layout_with_focus(screen_area, Some(state.focus.current()));
+
+            // Handle mouse click to focus panel AND forward click to panel
+            if let event::MouseEventKind::Down(event::MouseButton::Left) = mouse.kind {
+                if let Some(panel_id) = layout.panel_at(x, y) {
+                    // Focus the panel if not already focused
+                    if panel_id != state.focus.current() {
+                        state.focus.focus(panel_id);
+                        panels.get_mut(panel_id).on_focus();
+                    }
+                    // Forward the click event to the panel for handling (e.g., tab clicks, file selection)
+                    panels.get_mut(panel_id).handle_input(event, state)?;
+                }
+            }
+
+            // Handle mouse scroll in panels
+            match mouse.kind {
+                event::MouseEventKind::ScrollUp => {
+                    if let Some(panel_id) = layout.panel_at(x, y) {
+                        // Create a scroll event for the panel
+                        let scroll_event = Event::Mouse(crossterm::event::MouseEvent {
+                            kind: event::MouseEventKind::ScrollUp,
+                            column: x,
+                            row: y,
+                            modifiers: mouse.modifiers,
+                        });
+                        panels.get_mut(panel_id).handle_input(&scroll_event, state)?;
+                    }
+                }
+                event::MouseEventKind::ScrollDown => {
+                    if let Some(panel_id) = layout.panel_at(x, y) {
+                        let scroll_event = Event::Mouse(crossterm::event::MouseEvent {
+                            kind: event::MouseEventKind::ScrollDown,
+                            column: x,
+                            row: y,
+                            modifiers: mouse.modifiers,
+                        });
+                        panels.get_mut(panel_id).handle_input(&scroll_event, state)?;
+                    }
+                }
+                _ => {}
             }
         }
 
