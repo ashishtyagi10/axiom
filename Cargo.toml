@@ -1,0 +1,60 @@
+[package]
+name = "axiom"
+version = "0.1.0"
+edition = "2021"
+description = "A terminal-based IDE with AI integration"
+authors = ["atyagi"]
+license = "MIT"
+
+[dependencies]
+# TUI
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+
+# Async
+tokio = { version = "1", features = ["full"] }
+
+# Channels (bounded for backpressure)
+crossbeam-channel = "0.5"
+
+# PTY
+portable-pty = "0.8"
+
+# Terminal emulation
+vt100 = "0.15"
+
+# HTTP for LLM providers
+ureq = { version = "2.9", features = ["json"] }
+futures = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "2.0"
+
+# Syntax highlighting
+syntect = "5.2"
+
+# Markdown parsing
+pulldown-cmark = "0.10"
+
+# Clipboard
+arboard = "3.4"
+
+# Paths
+dirs = "5.0"
+
+# Concurrency
+parking_lot = "0.12"
+
+# Unicode
+unicode-width = "0.2"
+
+[dev-dependencies]
+pretty_assertions = "1.4"
+
+[profile.release]
+opt-level = 3
+lto = true
