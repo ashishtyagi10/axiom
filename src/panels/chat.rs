@@ -2,7 +2,7 @@
 
 use crate::core::Result;
 use crate::events::Event;
-use crate::llm::{LlmProvider, OllamaProvider};
+use crate::llm::SharedProvider;
 use crate::state::{AppState, PanelId};
 use crate::ui::{render_markdown, ScrollBar};
 use crossbeam_channel::Sender;
@@ -15,7 +15,6 @@ use ratatui::{
     Frame,
 };
 use std::cell::Cell;
-use std::sync::Arc;
 
 /// File modification parsed from LLM response
 #[derive(Debug, Clone)]
@@ -130,8 +129,8 @@ pub struct ChatPanel {
     /// Accumulated streaming response
     streaming_buffer: String,
 
-    /// LLM provider (Ollama)
-    llm: Arc<OllamaProvider>,
+    /// LLM provider (supports multiple backends)
+    llm: SharedProvider,
 
     /// Event sender for LLM responses
     event_tx: Option<Sender<Event>>,
@@ -147,8 +146,8 @@ pub struct ChatPanel {
 }
 
 impl ChatPanel {
-    /// Create new chat panel
-    pub fn new(event_tx: Sender<Event>) -> Self {
+    /// Create new chat panel with the given LLM provider
+    pub fn new(event_tx: Sender<Event>, llm: SharedProvider) -> Self {
         Self {
             messages: vec![ChatMessage {
                 role: Role::System,
@@ -158,12 +157,27 @@ impl ChatPanel {
             cursor: 0,
             is_generating: false,
             streaming_buffer: String::new(),
-            llm: Arc::new(OllamaProvider::default()),
+            llm,
             event_tx: Some(event_tx),
             scroll_offset: 0,
             history_area: Cell::new(Rect::default()),
             history_line_count: Cell::new(0),
         }
+    }
+
+    /// Switch to a different LLM provider
+    pub fn set_provider(&mut self, provider: SharedProvider) {
+        self.llm = provider;
+    }
+
+    /// Get the current provider name
+    pub fn provider_name(&self) -> &str {
+        self.llm.name()
+    }
+
+    /// Get the current provider ID
+    pub fn provider_id(&self) -> &str {
+        self.llm.id()
     }
 
     /// Scroll to bottom of chat history
@@ -401,12 +415,12 @@ impl ChatPanel {
 
     /// List available models
     pub fn list_models(&self) -> std::result::Result<Vec<String>, String> {
-        self.llm.list_models()
+        self.llm.list_models().map_err(|e| e.to_string())
     }
 
     /// Set the model to use
     pub fn set_model(&self, model: &str) {
-        self.llm.set_model(model);
+        let _ = self.llm.set_model(model);
     }
 }
 

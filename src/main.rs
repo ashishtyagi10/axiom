@@ -3,8 +3,10 @@
 //! Entry point with proper terminal setup and cleanup.
 
 use axiom::{
+    config::{load_config, AxiomConfig},
     core::Result,
     events::{Event, EventBus},
+    llm::{ClaudeProvider, GeminiProvider, OllamaProvider, ProviderRegistry},
     panels::{Panel, PanelRegistry},
     state::AppState,
     ui,
@@ -17,6 +19,7 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Application entry point.
@@ -64,8 +67,17 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     // Create application state
     let mut state = AppState::new();
 
+    // Load configuration
+    let config = load_config(&state.cwd).unwrap_or_else(|e| {
+        eprintln!("Warning: Failed to load config: {}. Using defaults.", e);
+        AxiomConfig::default()
+    });
+
+    // Create provider registry from config
+    let llm_registry = create_provider_registry(&config);
+
     // Create panels
-    let mut panels = PanelRegistry::new(event_bus.sender(), &state.cwd)?;
+    let mut panels = PanelRegistry::new(event_bus.sender(), &state.cwd, llm_registry)?;
 
     // Start file watcher for the project directory
     let _file_watcher = FileWatcher::new(&state.cwd, event_bus.sender())
@@ -409,6 +421,72 @@ fn spawn_input_reader(tx: crossbeam_channel::Sender<Event>) {
             }
         }
     });
+}
+
+/// Creates the LLM provider registry based on configuration.
+///
+/// Registers all enabled providers (Ollama, Claude, Gemini) and sets
+/// the default active provider.
+fn create_provider_registry(config: &AxiomConfig) -> ProviderRegistry {
+    let mut registry = ProviderRegistry::from_config(config);
+
+    // Register Ollama provider (always available, uses local server)
+    if let Some(ollama_config) = config.get_provider("ollama") {
+        if ollama_config.enabled {
+            let base_url = ollama_config
+                .base_url
+                .as_deref()
+                .unwrap_or("http://localhost:11434");
+            let model = ollama_config
+                .default_model
+                .as_deref()
+                .unwrap_or("gemma3:4b");
+            registry.register(Arc::new(OllamaProvider::new(base_url, model)));
+        }
+    } else {
+        // Register with defaults if not in config
+        registry.register(Arc::new(OllamaProvider::default()));
+    }
+
+    // Register Claude provider if API key is available
+    if let Some(claude_config) = config.get_provider("claude") {
+        if claude_config.enabled {
+            if let Some(ref api_key) = claude_config.api_key {
+                if !api_key.is_empty() && !api_key.starts_with("${") {
+                    let model = claude_config
+                        .default_model
+                        .as_deref()
+                        .unwrap_or("claude-sonnet-4-20250514");
+                    registry.register(Arc::new(ClaudeProvider::new(api_key, model)));
+                }
+            }
+        }
+    }
+
+    // Register Gemini provider if API key is available
+    if let Some(gemini_config) = config.get_provider("gemini") {
+        if gemini_config.enabled {
+            if let Some(ref api_key) = gemini_config.api_key {
+                if !api_key.is_empty() && !api_key.starts_with("${") {
+                    let model = gemini_config
+                        .default_model
+                        .as_deref()
+                        .unwrap_or("gemini-2.0-flash");
+                    registry.register(Arc::new(GeminiProvider::new(api_key, model)));
+                }
+            }
+        }
+    }
+
+    // Set the default provider as active
+    let _ = registry.set_active(&config.llm.default_provider);
+
+    // Fallback to ollama if default provider is not available
+    if registry.active().is_none() {
+        let _ = registry.set_active("ollama");
+    }
+
+    registry
 }
 
 /// Checks if a given path corresponds to a source code file.

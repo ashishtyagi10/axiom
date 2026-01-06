@@ -14,10 +14,13 @@ pub use chat::ChatPanel;
 
 use crate::core::Result;
 use crate::events::Event;
+use crate::llm::ProviderRegistry;
 use crate::state::{AppState, PanelId};
 use crate::ui::ModelSelector;
 use ratatui::layout::Rect;
 use ratatui::Frame;
+use std::sync::Arc;
+use parking_lot::RwLock;
 
 /// Panel trait - defines the interface for all panels
 ///
@@ -67,18 +70,33 @@ pub struct PanelRegistry {
     pub model_selector: ModelSelector,
     /// Cached model badge area for click detection
     pub model_badge_area: Option<Rect>,
+    /// LLM provider registry for multi-provider support
+    pub llm_registry: Arc<RwLock<ProviderRegistry>>,
 }
 
 impl PanelRegistry {
-    /// Create panel registry with all default panels
-    pub fn new(event_tx: crossbeam_channel::Sender<Event>, cwd: &std::path::Path) -> Result<Self> {
+    /// Create panel registry with all default panels and LLM providers
+    pub fn new(
+        event_tx: crossbeam_channel::Sender<Event>,
+        cwd: &std::path::Path,
+        llm_registry: ProviderRegistry,
+    ) -> Result<Self> {
+        let registry = Arc::new(RwLock::new(llm_registry));
+
+        // Get the active provider for the chat panel
+        let provider = registry
+            .read()
+            .active()
+            .expect("No active LLM provider configured");
+
         Ok(Self {
             file_tree: FileTreePanel::new(cwd),
             editor: EditorPanel::new(),
             terminal: TerminalPanel::new(event_tx.clone(), cwd)?,
-            chat: ChatPanel::new(event_tx),
+            chat: ChatPanel::new(event_tx, provider),
             model_selector: ModelSelector::new(),
             model_badge_area: None,
+            llm_registry: registry,
         })
     }
 
@@ -92,24 +110,65 @@ impl PanelRegistry {
     /// Open the model selector modal
     pub fn open_model_selector(&mut self) {
         let current = self.chat.current_model();
-        match self.chat.list_models() {
-            Ok(models) => {
-                self.model_selector.set_models(models, &current);
-            }
-            Err(e) => {
-                self.model_selector.set_error(e);
+        let provider_id = self.chat.provider_id();
+
+        // Get all models from all providers
+        let registry = self.llm_registry.read();
+        let mut all_models: Vec<String> = Vec::new();
+
+        // Add models from all available providers with provider prefix
+        for info in registry.provider_info() {
+            if let Some(provider) = registry.get(&info.id) {
+                if let Ok(models) = provider.list_models() {
+                    for model in models {
+                        // Format: "provider:model" for display
+                        all_models.push(format!("{}:{}", info.id, model));
+                    }
+                }
             }
         }
+
+        let current_full = format!("{}:{}", provider_id, current);
+        self.model_selector.set_models(all_models, &current_full);
     }
 
     /// Apply the selected model
     pub fn apply_selected_model(&mut self) -> Option<String> {
-        if let Some(model) = self.model_selector.selected_model() {
-            let model = model.to_string();
-            self.chat.set_model(&model);
-            Some(model)
+        if let Some(selection) = self.model_selector.selected_model() {
+            let selection = selection.to_string();
+
+            // Parse "provider:model" format
+            if let Some(colon_idx) = selection.find(':') {
+                let provider_id = &selection[..colon_idx];
+                let model = &selection[colon_idx + 1..];
+
+                // Switch provider if different
+                if provider_id != self.chat.provider_id() {
+                    if let Some(provider) = self.llm_registry.read().get(provider_id) {
+                        self.chat.set_provider(provider);
+                    }
+                }
+
+                // Set the model
+                self.chat.set_model(model);
+                return Some(selection);
+            }
+
+            // Fallback: just set model on current provider
+            self.chat.set_model(&selection);
+            Some(selection)
         } else {
             None
+        }
+    }
+
+    /// Switch to a specific provider
+    pub fn switch_provider(&mut self, provider_id: &str) -> bool {
+        if let Some(provider) = self.llm_registry.read().get(provider_id) {
+            self.chat.set_provider(provider);
+            true
+        } else {
+            false
         }
     }
 

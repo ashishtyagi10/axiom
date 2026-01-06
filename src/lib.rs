@@ -5,7 +5,9 @@
 //! - Text editor with syntax highlighting
 //! - Integrated terminal with proper PTY resize
 //! - AI chat with streaming support
+//! - Multi-provider LLM integration (Claude, Gemini, Ollama, OpenAI)
 
+pub mod config;
 pub mod core;
 pub mod events;
 pub mod llm;
