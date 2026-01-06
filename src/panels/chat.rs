@@ -16,6 +16,87 @@ use ratatui::{
 };
 use std::sync::Arc;
 
+/// File modification parsed from LLM response
+#[derive(Debug, Clone)]
+pub struct FileModification {
+    pub path: String,
+    pub content: String,
+}
+
+/// Parse code blocks with file paths from LLM response
+/// Format: ```lang:path/to/file.ext or ```path/to/file.ext
+fn parse_file_modifications(content: &str) -> Vec<FileModification> {
+    let mut modifications = Vec::new();
+    let mut remaining = content;
+
+    while let Some(start_idx) = remaining.find("```") {
+        let after_backticks = &remaining[start_idx + 3..];
+
+        // Find end of first line (the info string)
+        if let Some(newline_idx) = after_backticks.find('\n') {
+            let info_string = &after_backticks[..newline_idx];
+
+            // Find closing ```
+            let content_start = &after_backticks[newline_idx + 1..];
+            if let Some(end_idx) = content_start.find("```") {
+                let code_content = &content_start[..end_idx];
+
+                // Parse info string for file path
+                // Format: lang:path or just path
+                if let Some(path) = extract_file_path(info_string) {
+                    modifications.push(FileModification {
+                        path,
+                        content: code_content.to_string(),
+                    });
+                }
+
+                // Move past this code block
+                remaining = &content_start[end_idx + 3..];
+                continue;
+            }
+        }
+
+        // Couldn't parse this block, move past the ```
+        remaining = &remaining[start_idx + 3..];
+    }
+
+    modifications
+}
+
+/// Extract file path from code block info string
+/// Supports: "rust:src/main.rs", "src/main.rs", "python:utils/helper.py"
+fn extract_file_path(info_string: &str) -> Option<String> {
+    let trimmed = info_string.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Check for lang:path format
+    if let Some(colon_idx) = trimmed.find(':') {
+        let path = trimmed[colon_idx + 1..].trim();
+        if looks_like_file_path(path) {
+            return Some(path.to_string());
+        }
+    }
+
+    // Check if the whole info string is a path
+    if looks_like_file_path(trimmed) {
+        return Some(trimmed.to_string());
+    }
+
+    None
+}
+
+/// Check if a string looks like a file path
+fn looks_like_file_path(s: &str) -> bool {
+    // Must contain a dot (extension) or path separator
+    (s.contains('.') || s.contains('/') || s.contains('\\'))
+        // Must not contain spaces (likely natural language)
+        && !s.contains(' ')
+        // Must not be too long
+        && s.len() < 256
+}
+
 /// Chat message
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
@@ -116,9 +197,22 @@ impl ChatPanel {
     /// Complete streaming response
     pub fn complete_response(&mut self) {
         if !self.streaming_buffer.is_empty() {
+            let content = std::mem::take(&mut self.streaming_buffer);
+
+            // Parse for file modifications and send events
+            let modifications = parse_file_modifications(&content);
+            if let Some(ref event_tx) = self.event_tx {
+                for modification in modifications {
+                    let _ = event_tx.send(Event::FileModification {
+                        path: modification.path,
+                        content: modification.content,
+                    });
+                }
+            }
+
             self.messages.push(ChatMessage {
                 role: Role::Assistant,
-                content: std::mem::take(&mut self.streaming_buffer),
+                content,
             });
         }
         self.is_generating = false;
@@ -480,5 +574,75 @@ impl super::Panel for ChatPanel {
                 frame.set_cursor_position((cursor_x, cursor_y));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_file_modifications_with_lang_colon_path() {
+        let content = r#"Here's the updated code:
+
+```rust:src/main.rs
+fn main() {
+    println!("Hello!");
+}
+```
+
+Hope that helps!"#;
+
+        let mods = parse_file_modifications(content);
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].path, "src/main.rs");
+        assert!(mods[0].content.contains("fn main()"));
+    }
+
+    #[test]
+    fn test_parse_file_modifications_path_only() {
+        let content = r#"```src/lib.rs
+pub fn hello() {}
+```"#;
+
+        let mods = parse_file_modifications(content);
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].path, "src/lib.rs");
+    }
+
+    #[test]
+    fn test_parse_file_modifications_multiple() {
+        let content = r#"```rust:src/a.rs
+fn a() {}
+```
+
+```python:utils/b.py
+def b():
+    pass
+```"#;
+
+        let mods = parse_file_modifications(content);
+        assert_eq!(mods.len(), 2);
+        assert_eq!(mods[0].path, "src/a.rs");
+        assert_eq!(mods[1].path, "utils/b.py");
+    }
+
+    #[test]
+    fn test_parse_file_modifications_ignores_plain_code_blocks() {
+        let content = r#"```rust
+fn example() {}
+```"#;
+
+        let mods = parse_file_modifications(content);
+        assert_eq!(mods.len(), 0); // No path, so ignored
+    }
+
+    #[test]
+    fn test_looks_like_file_path() {
+        assert!(looks_like_file_path("src/main.rs"));
+        assert!(looks_like_file_path("file.txt"));
+        assert!(looks_like_file_path("path/to/file"));
+        assert!(!looks_like_file_path("rust")); // language name, not path
+        assert!(!looks_like_file_path("some text with spaces"));
     }
 }

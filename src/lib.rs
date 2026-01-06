@@ -13,6 +13,7 @@ pub mod panels;
 pub mod state;
 pub mod terminal;
 pub mod ui;
+pub mod watcher;
 
 // Re-export commonly used types
 pub use core::{AxiomError, Result};

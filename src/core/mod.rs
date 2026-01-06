@@ -1,6 +1,10 @@
 //! Core infrastructure module
 //!
-//! Contains error types, configuration, and common utilities.
+//! This module provides the foundational types and utilities used throughout the application.
+//! It includes:
+//! - **Error Handling**: Unified error types (`AxiomError`, `Result`) for consistent error management.
+//! - **Configuration**: Core configuration structures (if any).
+//! - **Utilities**: Common helper functions and types.
 
 mod error;
 

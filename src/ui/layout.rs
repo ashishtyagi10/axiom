@@ -89,9 +89,10 @@ pub fn get_layout_with_focus(area: Rect, focused: Option<PanelId>) -> AppLayout 
     let chat = h_chunks[2];
 
     // Determine editor/terminal split based on focus
+    // Editor is the main area - gets more space when focused
     let (editor_pct, terminal_pct) = match focused {
-        Some(PanelId::TERMINAL) => (30, 70), // Terminal expanded when focused
-        Some(PanelId::EDITOR) => (70, 30),   // Editor expanded when focused
+        Some(PanelId::TERMINAL) => (50, 50), // Terminal gets 50% when focused
+        Some(PanelId::EDITOR) => (70, 30),   // Editor gets 70% when focused (main area)
         _ => (60, 40),                        // Default
     };
 

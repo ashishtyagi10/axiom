@@ -9,37 +9,47 @@ use std::time::Duration;
 /// Application events - unified event type
 #[derive(Debug, Clone)]
 pub enum Event {
-    /// Keyboard input
+    /// Keyboard input event
     Key(KeyEvent),
 
-    /// Mouse input
+    /// Mouse input event
     Mouse(MouseEvent),
 
-    /// Terminal resize (width, height)
+    /// Terminal resize event with new dimensions (width, height)
     Resize(u16, u16),
 
-    /// PTY output data
+    /// PTY output data (raw bytes from the pseudo-terminal)
     PtyOutput(Vec<u8>),
 
-    /// PTY process exited with code
+    /// PTY process exited with the specified exit code
     PtyExit(i32),
 
-    /// LLM streaming chunk
+    /// LLM streaming response chunk (partial token/text)
     LlmChunk(String),
 
-    /// LLM response complete
+    /// LLM response generation complete
     LlmDone,
 
-    /// LLM error occurred
+    /// LLM error occurred with description
     LlmError(String),
 
-    /// Tick event for periodic updates
+    /// File modification request from LLM
+    ///
+    /// Contains the file path and the new content to be applied.
+    FileModification { path: String, content: String },
+
+    /// File changed on disk (detected by file watcher)
+    ///
+    /// Contains the path to the file that was created or modified.
+    FileChanged(std::path::PathBuf),
+
+    /// Tick event for periodic updates (e.g., UI animations, polling)
     Tick,
 
-    /// Focus panel request
+    /// Request to focus a specific panel by index
     FocusPanel(usize),
 
-    /// Quit application
+    /// Quit application request
     Quit,
 }
 
@@ -53,26 +63,46 @@ pub struct EventBus {
 }
 
 impl EventBus {
-    /// Create a new event bus with specified capacity
+    /// Create a new event bus with specified capacity.
     ///
     /// Capacity determines how many events can be buffered before senders block.
     /// Recommended: 1024 for responsive UI with some buffering.
+    ///
+    /// # Arguments
+    ///
+    /// * `capacity` - The maximum number of events the bus can hold before blocking senders.
     pub fn new(capacity: usize) -> Self {
         let (tx, rx) = bounded(capacity);
         Self { tx, rx }
     }
 
-    /// Get a sender clone for spawning event producers
+    /// Get a sender clone for spawning event producers.
+    ///
+    /// This sender can be cloned and sent to other threads to produce events.
     pub fn sender(&self) -> Sender<Event> {
         self.tx.clone()
     }
 
-    /// Receive next event, blocking until available or timeout
+    /// Receive the next event, blocking until one is available or the timeout expires.
+    ///
+    /// # Arguments
+    ///
+    /// * `timeout` - The maximum duration to wait for an event.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(Event)` if an event was received.
+    /// * `None` if the timeout expired or the channel is disconnected.
     pub fn recv_timeout(&self, timeout: Duration) -> Option<Event> {
         self.rx.recv_timeout(timeout).ok()
     }
 
-    /// Try to receive without blocking
+    /// Try to receive the next event without blocking.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(Event)` if an event is immediately available.
+    /// * `None` if the channel is empty or disconnected.
     pub fn try_recv(&self) -> Option<Event> {
         match self.rx.try_recv() {
             Ok(event) => Some(event),
@@ -81,9 +111,18 @@ impl EventBus {
         }
     }
 
-    /// Drain up to max events from the queue
+    /// Drain up to `max` events from the queue.
     ///
-    /// Useful for batch processing to prevent event starvation.
+    /// Useful for batch processing to prevent event starvation or to handle
+    /// multiple accumulated events (like resize or pty output) at once.
+    ///
+    /// # Arguments
+    ///
+    /// * `max` - The maximum number of events to retrieve.
+    ///
+    /// # Returns
+    ///
+    /// A vector containing the drained events.
     pub fn drain(&self, max: usize) -> Vec<Event> {
         let mut events = Vec::with_capacity(max);
         while events.len() < max {

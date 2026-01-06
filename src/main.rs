@@ -8,6 +8,7 @@ use axiom::{
     panels::{Panel, PanelRegistry},
     state::AppState,
     ui,
+    watcher::FileWatcher,
 };
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyModifiers},
@@ -18,6 +19,11 @@ use ratatui::prelude::*;
 use std::io;
 use std::time::Duration;
 
+/// Application entry point.
+///
+/// Sets up the terminal in raw mode, initializes the TUI backend,
+/// runs the application loop, and ensures the terminal is restored
+/// to its original state upon exit or panic.
 fn main() -> Result<()> {
     // Setup terminal
     terminal::enable_raw_mode()?;
@@ -46,6 +52,11 @@ fn main() -> Result<()> {
     result
 }
 
+/// Main application loop.
+///
+/// Initializes the application state, event bus, panels, and file watcher.
+/// Handles the main event loop, rendering the UI and processing events
+/// until a quit signal is received.
 fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     // Create event bus with bounded channel
     let event_bus = EventBus::new(1024);
@@ -55,6 +66,10 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
 
     // Create panels
     let mut panels = PanelRegistry::new(event_bus.sender(), &state.cwd)?;
+
+    // Start file watcher for the project directory
+    let _file_watcher = FileWatcher::new(&state.cwd, event_bus.sender())
+        .map_err(|e| axiom::core::AxiomError::Config(format!("File watcher error: {}", e)))?;
 
     // Spawn input reader thread
     spawn_input_reader(event_bus.sender());
@@ -112,9 +127,12 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     Ok(())
 }
 
-/// Handle a single event
+/// Processes a single application event.
 ///
-/// Returns Ok(true) if quit was requested.
+/// Handles global keybindings (like quitting or focus switching) and routes
+/// specific events to the appropriate panels (Editor, Terminal, Chat, etc.).
+///
+/// Returns `Ok(true)` if the application should exit.
 fn handle_event(
     event: &Event,
     state: &mut AppState,
@@ -253,6 +271,42 @@ fn handle_event(
             panels.chat.handle_input(event, state)?;
         }
 
+        // File modification from LLM - route to editor (opens in new tab if needed)
+        Event::FileModification { ref path, ref content } => {
+            let file_path = std::path::PathBuf::from(path);
+
+            // Resolve relative paths against cwd
+            let resolved_path = if file_path.is_absolute() {
+                file_path
+            } else {
+                state.cwd.join(&file_path)
+            };
+
+            // Apply modification (automatically opens/switches to tab)
+            panels.editor.apply_modification_to_path(&resolved_path, content);
+            state.info(format!("Modified: {}", path));
+        }
+
+        // File changed on disk (detected by file watcher)
+        Event::FileChanged(ref path) => {
+            // Only auto-open if file is already open (update it) or is a source file
+            if panels.editor.has_file_open(path) {
+                // File is already open - reload it
+                if let Err(e) = panels.editor.open(path) {
+                    state.error(format!("Failed to reload {}: {}", path.display(), e));
+                } else {
+                    state.info(format!("Reloaded: {}", path.file_name().unwrap_or_default().to_string_lossy()));
+                }
+            } else if is_source_file(path) {
+                // Auto-open new/modified source files
+                if let Err(e) = panels.editor.open(path) {
+                    state.error(format!("Failed to open {}: {}", path.display(), e));
+                } else {
+                    state.info(format!("Opened: {}", path.file_name().unwrap_or_default().to_string_lossy()));
+                }
+            }
+        }
+
         // Resize is handled in main loop
         Event::Resize(_, _) => {}
 
@@ -266,7 +320,10 @@ fn handle_event(
     Ok(false)
 }
 
-/// Spawn thread to read input events
+/// Spawns a dedicated thread to read input events (keyboard, mouse, resize).
+///
+/// Events are sent to the main loop via the provided channel.
+/// The thread polls for events with a timeout to allow for clean shutdown.
 fn spawn_input_reader(tx: crossbeam_channel::Sender<Event>) {
     std::thread::spawn(move || {
         loop {
@@ -294,4 +351,44 @@ fn spawn_input_reader(tx: crossbeam_channel::Sender<Event>) {
             }
         }
     });
+}
+
+/// Checks if a given path corresponds to a source code file.
+///
+/// Determines if a file should be automatically opened in the editor
+/// based on its file extension or specific filename (e.g., Dockerfile, Makefile).
+fn is_source_file(path: &std::path::Path) -> bool {
+    let source_extensions = [
+        "rs", "py", "js", "ts", "tsx", "jsx", "go", "java", "c", "cpp", "h", "hpp",
+        "rb", "php", "swift", "kt", "scala", "cs", "fs", "hs", "ml", "ex", "exs",
+        "clj", "lisp", "scm", "lua", "r", "jl", "nim", "zig", "v", "d",
+        "html", "css", "scss", "sass", "less", "vue", "svelte",
+        "json", "yaml", "yml", "toml", "xml", "md", "txt",
+        "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd",
+        "sql", "graphql", "proto",
+        "dockerfile", "makefile", "cmake",
+    ];
+
+    // Check extension
+    if let Some(ext) = path.extension() {
+        let ext_lower = ext.to_string_lossy().to_lowercase();
+        if source_extensions.contains(&ext_lower.as_str()) {
+            return true;
+        }
+    }
+
+    // Check filename (for files without extensions)
+    if let Some(name) = path.file_name() {
+        let name_lower = name.to_string_lossy().to_lowercase();
+        let special_files = [
+            "dockerfile", "makefile", "cmakelists.txt", "cargo.toml",
+            "package.json", "tsconfig.json", "pyproject.toml",
+            "gemfile", "rakefile", "justfile",
+        ];
+        if special_files.contains(&name_lower.as_str()) {
+            return true;
+        }
+    }
+
+    false
 }

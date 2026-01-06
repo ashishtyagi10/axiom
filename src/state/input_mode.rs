@@ -23,23 +23,24 @@ pub enum InputMode {
 }
 
 impl Default for InputMode {
+    /// Returns the default input mode (Normal).
     fn default() -> Self {
         Self::Normal
     }
 }
 
 impl InputMode {
-    /// Check if currently in a text editing mode
+    /// Returns true if the current mode allows for text editing (Insert, Command, or Search).
     pub fn is_editing(&self) -> bool {
         matches!(self, InputMode::Insert | InputMode::Command { .. } | InputMode::Search { .. })
     }
 
-    /// Check if a modal/overlay is open
+    /// Returns true if an overlay or modal is currently active, blocking normal navigation.
     pub fn is_modal(&self) -> bool {
         matches!(self, InputMode::Command { .. } | InputMode::Search { .. } | InputMode::Modal { .. })
     }
 
-    /// Get the current query if in search/command mode
+    /// Returns the active query string if in Search or Command mode.
     pub fn query(&self) -> Option<&str> {
         match self {
             InputMode::Command { query } => Some(query),
@@ -48,32 +49,32 @@ impl InputMode {
         }
     }
 
-    /// Transition to normal mode
+    /// Transitions the state to Normal navigation mode.
     pub fn to_normal(&mut self) {
         *self = InputMode::Normal;
     }
 
-    /// Transition to insert mode
+    /// Transitions the state to Insert mode for text input.
     pub fn to_insert(&mut self) {
         *self = InputMode::Insert;
     }
 
-    /// Open command palette
+    /// Transitions to Command mode, initializing an empty query string.
     pub fn open_command(&mut self) {
         *self = InputMode::Command { query: String::new() };
     }
 
-    /// Open search
+    /// Transitions to Search mode with the specified direction.
     pub fn open_search(&mut self, forward: bool) {
         *self = InputMode::Search { query: String::new(), forward };
     }
 
-    /// Open a named modal
+    /// Transitions to Modal mode with the given name.
     pub fn open_modal(&mut self, name: impl Into<String>) {
         *self = InputMode::Modal { name: name.into() };
     }
 
-    /// Check if a specific modal is open
+    /// Returns true if a modal with the specified name is currently open.
     pub fn is_modal_open(&self, modal_name: &str) -> bool {
         matches!(self, InputMode::Modal { name } if name == modal_name)
     }

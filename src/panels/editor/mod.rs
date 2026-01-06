@@ -4,6 +4,7 @@
 //! - Syntax highlighting via syntect
 //! - Git-style diff tracking for LLM modifications
 //! - Vim-style cursor movement
+//! - Multi-file tabs support
 
 mod diff;
 mod highlight;
@@ -16,43 +17,86 @@ use crate::events::Event;
 use crate::state::{AppState, PanelId};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
-    layout::Rect,
-    style::{Color, Style},
+    layout::{Constraint, Direction as LayoutDirection, Layout, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Tabs},
     Frame,
 };
 use std::path::PathBuf;
 
-/// Editor panel state
-pub struct EditorPanel {
-    /// Current file path (if any)
-    file_path: Option<PathBuf>,
-
+/// Single file tab state
+pub struct FileTab {
+    /// File path (if saved)
+    pub file_path: Option<PathBuf>,
     /// Text content as lines
-    lines: Vec<String>,
-
+    pub lines: Vec<String>,
     /// Cursor position (line, column)
-    cursor: (usize, usize),
-
+    pub cursor: (usize, usize),
     /// Scroll offset (line, column)
-    scroll: (usize, usize),
-
+    pub scroll: (usize, usize),
     /// File has unsaved changes
-    modified: bool,
-
-    /// Syntax highlighter
-    highlighter: Highlighter,
-
+    pub modified: bool,
     /// Cached highlighted lines
-    highlighted_lines: Vec<Vec<(String, Style)>>,
-
+    pub highlighted_lines: Vec<Vec<(String, Style)>>,
     /// Diff tracker for LLM modifications
-    diff_tracker: DiffTracker,
-
+    pub diff_tracker: DiffTracker,
     /// Whether highlight cache is dirty
-    highlight_dirty: bool,
+    pub highlight_dirty: bool,
+}
 
+impl FileTab {
+    /// Create a new empty tab
+    fn new() -> Self {
+        Self {
+            file_path: None,
+            lines: vec![String::new()],
+            cursor: (0, 0),
+            scroll: (0, 0),
+            modified: false,
+            highlighted_lines: Vec::new(),
+            diff_tracker: DiffTracker::new(),
+            highlight_dirty: true,
+        }
+    }
+
+    /// Create a tab for a new file (not yet saved)
+    fn new_file(path: PathBuf) -> Self {
+        Self {
+            file_path: Some(path),
+            lines: vec![String::new()],
+            cursor: (0, 0),
+            scroll: (0, 0),
+            modified: true,
+            highlighted_lines: Vec::new(),
+            diff_tracker: DiffTracker::new(),
+            highlight_dirty: true,
+        }
+    }
+
+    /// Get display name for tab
+    fn display_name(&self) -> String {
+        self.file_path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "[New]".to_string())
+    }
+
+    /// Get current line content
+    fn current_line(&self) -> &str {
+        self.lines.get(self.cursor.0).map(|s| s.as_str()).unwrap_or("")
+    }
+}
+
+/// Editor panel with multi-file tabs
+pub struct EditorPanel {
+    /// Open file tabs
+    tabs: Vec<FileTab>,
+    /// Active tab index
+    active_tab: usize,
+    /// Syntax highlighter (shared across tabs)
+    highlighter: Highlighter,
     /// Visible height (updated on render)
     visible_height: usize,
 }
@@ -67,280 +111,422 @@ impl EditorPanel {
     /// Create new empty editor
     pub fn new() -> Self {
         Self {
-            file_path: None,
-            lines: vec![String::new()],
-            cursor: (0, 0),
-            scroll: (0, 0),
-            modified: false,
+            tabs: vec![FileTab::new()],
+            active_tab: 0,
             highlighter: Highlighter::new(),
-            highlighted_lines: Vec::new(),
-            diff_tracker: DiffTracker::new(),
-            highlight_dirty: true,
-            visible_height: 20, // Default, updated on render
+            visible_height: 20,
         }
     }
 
-    /// Open a file in the editor
-    pub fn open(&mut self, path: &std::path::Path) -> Result<()> {
-        let content =
-            std::fs::read_to_string(path).map_err(|e| crate::core::AxiomError::Io(e))?;
+    // ==================== Tab Access ====================
 
-        self.lines = content.lines().map(String::from).collect();
-        if self.lines.is_empty() {
-            self.lines.push(String::new());
+    /// Get active tab reference
+    fn active_tab(&self) -> &FileTab {
+        &self.tabs[self.active_tab]
+    }
+
+    /// Get active tab mutable reference
+    fn active_tab_mut(&mut self) -> &mut FileTab {
+        &mut self.tabs[self.active_tab]
+    }
+
+    /// Check if editor has any tabs
+    pub fn has_tabs(&self) -> bool {
+        !self.tabs.is_empty()
+    }
+
+    /// Get tab count
+    pub fn tab_count(&self) -> usize {
+        self.tabs.len()
+    }
+
+    // ==================== Tab Navigation ====================
+
+    /// Find tab index by path
+    pub fn find_tab_by_path(&self, path: &std::path::Path) -> Option<usize> {
+        self.tabs.iter().position(|tab| {
+            tab.file_path.as_deref() == Some(path)
+        })
+    }
+
+    /// Switch to tab by index
+    pub fn switch_tab(&mut self, index: usize) {
+        if index < self.tabs.len() {
+            self.active_tab = index;
+        }
+    }
+
+    /// Switch to next tab
+    pub fn next_tab(&mut self) {
+        if !self.tabs.is_empty() {
+            self.active_tab = (self.active_tab + 1) % self.tabs.len();
+        }
+    }
+
+    /// Switch to previous tab
+    pub fn prev_tab(&mut self) {
+        if !self.tabs.is_empty() {
+            self.active_tab = if self.active_tab == 0 {
+                self.tabs.len() - 1
+            } else {
+                self.active_tab - 1
+            };
+        }
+    }
+
+    /// Close tab by index
+    pub fn close_tab(&mut self, index: usize) {
+        if self.tabs.len() <= 1 {
+            // Keep at least one tab (empty)
+            self.tabs[0] = FileTab::new();
+            return;
         }
 
-        self.file_path = Some(path.to_path_buf());
-        self.cursor = (0, 0);
-        self.scroll = (0, 0);
-        self.modified = false;
-        self.highlight_dirty = true;
+        if index < self.tabs.len() {
+            self.tabs.remove(index);
+            // Adjust active tab if needed
+            if self.active_tab >= self.tabs.len() {
+                self.active_tab = self.tabs.len() - 1;
+            } else if self.active_tab > index {
+                self.active_tab -= 1;
+            }
+        }
+    }
 
-        // Stop any existing diff tracking
-        self.diff_tracker.stop_tracking();
+    /// Close current tab
+    pub fn close_current_tab(&mut self) {
+        self.close_tab(self.active_tab);
+    }
 
-        // Refresh syntax highlighting
-        self.refresh_highlighting();
+    // ==================== File Operations ====================
+
+    /// Open a file in editor (creates new tab or switches to existing)
+    pub fn open(&mut self, path: &std::path::Path) -> Result<()> {
+        // Check if file is already open
+        if let Some(idx) = self.find_tab_by_path(path) {
+            self.active_tab = idx;
+            return Ok(());
+        }
+
+        // Read file content
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| crate::core::AxiomError::Io(e))?;
+
+        // Create new tab
+        let mut tab = FileTab::new();
+        tab.lines = content.lines().map(String::from).collect();
+        if tab.lines.is_empty() {
+            tab.lines.push(String::new());
+        }
+        tab.file_path = Some(path.to_path_buf());
+        tab.modified = false;
+        tab.highlight_dirty = true;
+
+        // Refresh highlighting for new tab
+        tab.highlighted_lines = self.highlighter.highlight_all(&tab.lines, Some(path));
+
+        // Replace empty initial tab or add new tab
+        if self.tabs.len() == 1 && self.tabs[0].file_path.is_none() && !self.tabs[0].modified {
+            self.tabs[0] = tab;
+        } else {
+            self.tabs.push(tab);
+            self.active_tab = self.tabs.len() - 1;
+        }
 
         Ok(())
     }
 
-    /// Refresh syntax highlighting for all lines
-    fn refresh_highlighting(&mut self) {
-        self.highlighted_lines = self
-            .highlighter
-            .highlight_all(&self.lines, self.file_path.as_deref());
-        self.highlight_dirty = false;
+    /// Set up editor for a new file (not yet saved)
+    pub fn set_new_file(&mut self, path: &std::path::Path) {
+        // Check if already open
+        if let Some(idx) = self.find_tab_by_path(path) {
+            self.active_tab = idx;
+            return;
+        }
+
+        let tab = FileTab::new_file(path.to_path_buf());
+
+        // Replace empty initial tab or add new tab
+        if self.tabs.len() == 1 && self.tabs[0].file_path.is_none() && !self.tabs[0].modified {
+            self.tabs[0] = tab;
+        } else {
+            self.tabs.push(tab);
+            self.active_tab = self.tabs.len() - 1;
+        }
     }
 
-    /// Mark a single line as needing re-highlight
-    fn mark_line_dirty(&mut self, _line: usize) {
-        // For simplicity, mark entire file dirty
-        // A more sophisticated implementation could track per-line dirty state
-        self.highlight_dirty = true;
+    /// Get current file path
+    pub fn current_file(&self) -> Option<&std::path::Path> {
+        self.active_tab().file_path.as_deref()
     }
+
+    /// Check if a specific file is open (in any tab)
+    pub fn has_file_open(&self, path: &std::path::Path) -> bool {
+        self.find_tab_by_path(path).is_some()
+    }
+
+    // ==================== Diff Tracking ====================
 
     /// Start tracking changes for LLM diff display
     pub fn start_diff_tracking(&mut self) {
-        self.diff_tracker.start_tracking(&self.lines);
+        let tab = self.active_tab_mut();
+        tab.diff_tracker.start_tracking(&tab.lines);
     }
 
     /// Stop diff tracking
     pub fn stop_diff_tracking(&mut self) {
-        self.diff_tracker.stop_tracking();
+        self.active_tab_mut().diff_tracker.stop_tracking();
+    }
+
+    /// Apply content from LLM with diff tracking
+    pub fn apply_llm_modification(&mut self, content: &str) {
+        self.start_diff_tracking();
+
+        let tab = self.active_tab_mut();
+        tab.lines = content.lines().map(String::from).collect();
+        if tab.lines.is_empty() {
+            tab.lines.push(String::new());
+        }
+
+        tab.diff_tracker.update_diff(&tab.lines);
+        tab.modified = true;
+        tab.highlight_dirty = true;
+
+        // Refresh highlighting
+        let path = tab.file_path.clone();
+        let lines = tab.lines.clone();
+        self.active_tab_mut().highlighted_lines =
+            self.highlighter.highlight_all(&lines, path.as_deref());
+    }
+
+    /// Apply modification to specific tab by path
+    pub fn apply_modification_to_path(&mut self, path: &std::path::Path, content: &str) {
+        // Find or create tab
+        if let Some(idx) = self.find_tab_by_path(path) {
+            self.active_tab = idx;
+        } else if path.exists() {
+            let _ = self.open(path);
+        } else {
+            self.set_new_file(path);
+        }
+        self.apply_llm_modification(content);
+    }
+
+    // ==================== Highlighting ====================
+
+    /// Refresh syntax highlighting for active tab
+    fn refresh_highlighting(&mut self) {
+        let path = self.tabs[self.active_tab].file_path.clone();
+        let lines = self.tabs[self.active_tab].lines.clone();
+        let highlighted = self.highlighter.highlight_all(&lines, path.as_deref());
+        self.tabs[self.active_tab].highlighted_lines = highlighted;
+        self.tabs[self.active_tab].highlight_dirty = false;
+    }
+
+    /// Mark active tab as needing re-highlight
+    fn mark_line_dirty(&mut self, _line: usize) {
+        self.active_tab_mut().highlight_dirty = true;
     }
 
     /// Update diff after content changes
     fn update_diff(&mut self) {
-        if self.diff_tracker.is_tracking() {
-            self.diff_tracker.update_diff(&self.lines);
+        let tab = self.active_tab_mut();
+        if tab.diff_tracker.is_tracking() {
+            let lines = tab.lines.clone();
+            tab.diff_tracker.update_diff(&lines);
         }
     }
 
-    /// Get current line
-    fn current_line(&self) -> &str {
-        self.lines
-            .get(self.cursor.0)
-            .map(|s| s.as_str())
-            .unwrap_or("")
-    }
+    // ==================== Editing Operations ====================
 
     /// Insert character at cursor
     fn insert_char(&mut self, c: char) {
-        let row = self.cursor.0;
-        let col = self.cursor.1;
-        let line = &mut self.lines[row];
+        let tab = self.active_tab_mut();
+        let row = tab.cursor.0;
+        let col = tab.cursor.1;
+        let line = &mut tab.lines[row];
         let col = col.min(line.chars().count());
 
-        // Insert at byte position
         let byte_pos: usize = line.chars().take(col).map(|ch| ch.len_utf8()).sum();
         line.insert(byte_pos, c);
 
-        self.cursor.1 = col + 1;
-        self.modified = true;
+        tab.cursor.1 = col + 1;
+        tab.modified = true;
         self.mark_line_dirty(row);
         self.update_diff();
     }
 
     /// Delete character before cursor (backspace)
     fn backspace(&mut self) {
-        let row = self.cursor.0;
-        let col = self.cursor.1;
+        let tab = self.active_tab_mut();
+        let row = tab.cursor.0;
+        let col = tab.cursor.1;
 
         if col > 0 {
-            let line = &mut self.lines[row];
+            let line = &mut tab.lines[row];
             let col = col.min(line.chars().count());
 
             if col > 0 {
-                // Find byte position of previous char
                 let byte_pos: usize = line.chars().take(col).map(|ch| ch.len_utf8()).sum();
-                let prev_char_len = line
-                    .chars()
-                    .nth(col - 1)
-                    .map(|ch| ch.len_utf8())
-                    .unwrap_or(1);
+                let prev_char_len = line.chars().nth(col - 1).map(|ch| ch.len_utf8()).unwrap_or(1);
                 line.remove(byte_pos - prev_char_len);
-                self.cursor.1 = col - 1;
-                self.modified = true;
-                self.mark_line_dirty(row);
+                tab.cursor.1 = col - 1;
+                tab.modified = true;
+                tab.highlight_dirty = true;
             }
         } else if row > 0 {
-            // Join with previous line
-            let current = self.lines.remove(row);
-            self.cursor.0 = row - 1;
-            self.cursor.1 = self.lines[self.cursor.0].chars().count();
-            self.lines[self.cursor.0].push_str(&current);
-            self.modified = true;
-            self.highlight_dirty = true;
+            let current = tab.lines.remove(row);
+            tab.cursor.0 = row - 1;
+            tab.cursor.1 = tab.lines[tab.cursor.0].chars().count();
+            tab.lines[tab.cursor.0].push_str(&current);
+            tab.modified = true;
+            tab.highlight_dirty = true;
         }
         self.update_diff();
     }
 
     /// Delete character at cursor
     fn delete(&mut self) {
-        let row = self.cursor.0;
-        let col = self.cursor.1;
-        let line_len = self.lines[row].chars().count();
+        let tab = self.active_tab_mut();
+        let row = tab.cursor.0;
+        let col = tab.cursor.1;
+        let line_len = tab.lines[row].chars().count();
 
         if col < line_len {
-            let line = &mut self.lines[row];
+            let line = &mut tab.lines[row];
             let byte_pos: usize = line.chars().take(col).map(|ch| ch.len_utf8()).sum();
             line.remove(byte_pos);
-            self.modified = true;
-            self.mark_line_dirty(row);
-        } else if row + 1 < self.lines.len() {
-            // Join with next line
-            let next = self.lines.remove(row + 1);
-            self.lines[row].push_str(&next);
-            self.modified = true;
-            self.highlight_dirty = true;
+            tab.modified = true;
+            tab.highlight_dirty = true;
+        } else if row + 1 < tab.lines.len() {
+            let next = tab.lines.remove(row + 1);
+            tab.lines[row].push_str(&next);
+            tab.modified = true;
+            tab.highlight_dirty = true;
         }
         self.update_diff();
     }
 
     /// Insert newline at cursor
     fn newline(&mut self) {
-        let row = self.cursor.0;
-        let col = self.cursor.1;
-        let line = &mut self.lines[row];
+        let tab = self.active_tab_mut();
+        let row = tab.cursor.0;
+        let col = tab.cursor.1;
+        let line = &mut tab.lines[row];
         let byte_pos: usize = line.chars().take(col).map(|ch| ch.len_utf8()).sum();
 
         let rest = line.split_off(byte_pos);
-        self.cursor.0 = row + 1;
-        self.cursor.1 = 0;
-        self.lines.insert(self.cursor.0, rest);
-        self.modified = true;
-        self.highlight_dirty = true;
+        tab.cursor.0 = row + 1;
+        tab.cursor.1 = 0;
+        tab.lines.insert(tab.cursor.0, rest);
+        tab.modified = true;
+        tab.highlight_dirty = true;
         self.update_diff();
     }
 
-    /// Move cursor and adjust scroll to keep cursor visible
+    // ==================== Cursor Movement ====================
+
+    /// Move cursor and adjust scroll
     fn move_cursor(&mut self, dir: Direction) {
+        let tab = self.active_tab_mut();
         match dir {
             Direction::Up => {
-                if self.cursor.0 > 0 {
-                    self.cursor.0 -= 1;
-                    let line_len = self.current_line().chars().count();
-                    self.cursor.1 = self.cursor.1.min(line_len);
+                if tab.cursor.0 > 0 {
+                    tab.cursor.0 -= 1;
+                    let line_len = tab.current_line().chars().count();
+                    tab.cursor.1 = tab.cursor.1.min(line_len);
                 }
             }
             Direction::Down => {
-                if self.cursor.0 + 1 < self.lines.len() {
-                    self.cursor.0 += 1;
-                    let line_len = self.current_line().chars().count();
-                    self.cursor.1 = self.cursor.1.min(line_len);
+                if tab.cursor.0 + 1 < tab.lines.len() {
+                    tab.cursor.0 += 1;
+                    let line_len = tab.current_line().chars().count();
+                    tab.cursor.1 = tab.cursor.1.min(line_len);
                 }
             }
             Direction::Left => {
-                if self.cursor.1 > 0 {
-                    self.cursor.1 -= 1;
-                } else if self.cursor.0 > 0 {
-                    self.cursor.0 -= 1;
-                    self.cursor.1 = self.current_line().chars().count();
+                if tab.cursor.1 > 0 {
+                    tab.cursor.1 -= 1;
+                } else if tab.cursor.0 > 0 {
+                    tab.cursor.0 -= 1;
+                    tab.cursor.1 = tab.current_line().chars().count();
                 }
             }
             Direction::Right => {
-                let line_len = self.current_line().chars().count();
-                if self.cursor.1 < line_len {
-                    self.cursor.1 += 1;
-                } else if self.cursor.0 + 1 < self.lines.len() {
-                    self.cursor.0 += 1;
-                    self.cursor.1 = 0;
+                let line_len = tab.current_line().chars().count();
+                if tab.cursor.1 < line_len {
+                    tab.cursor.1 += 1;
+                } else if tab.cursor.0 + 1 < tab.lines.len() {
+                    tab.cursor.0 += 1;
+                    tab.cursor.1 = 0;
                 }
             }
         }
         self.ensure_cursor_visible();
     }
 
-    /// Scroll up by n lines
+    // ==================== Scrolling ====================
+
     fn scroll_up(&mut self, n: usize) {
-        self.scroll.0 = self.scroll.0.saturating_sub(n);
+        self.active_tab_mut().scroll.0 = self.active_tab().scroll.0.saturating_sub(n);
     }
 
-    /// Scroll down by n lines
     fn scroll_down(&mut self, n: usize) {
-        let max_scroll = self.lines.len().saturating_sub(1);
-        self.scroll.0 = (self.scroll.0 + n).min(max_scroll);
+        let tab = self.active_tab_mut();
+        let max_scroll = tab.lines.len().saturating_sub(1);
+        tab.scroll.0 = (tab.scroll.0 + n).min(max_scroll);
     }
 
-    /// Scroll up by half page
     fn scroll_half_page_up(&mut self) {
         let half = self.visible_height / 2;
         self.scroll_up(half.max(1));
     }
 
-    /// Scroll down by half page
     fn scroll_half_page_down(&mut self) {
         let half = self.visible_height / 2;
         self.scroll_down(half.max(1));
     }
 
-    /// Scroll up by full page
     fn scroll_page_up(&mut self) {
         self.scroll_up(self.visible_height.saturating_sub(2));
     }
 
-    /// Scroll down by full page
     fn scroll_page_down(&mut self) {
         self.scroll_down(self.visible_height.saturating_sub(2));
     }
 
-    /// Ensure cursor is visible within the viewport
     fn ensure_cursor_visible(&mut self) {
-        if self.cursor.0 < self.scroll.0 {
-            self.scroll.0 = self.cursor.0;
-        } else if self.cursor.0 >= self.scroll.0 + self.visible_height {
-            self.scroll.0 = self.cursor.0 - self.visible_height + 1;
+        let visible_height = self.visible_height;
+        let tab = &mut self.tabs[self.active_tab];
+        if tab.cursor.0 < tab.scroll.0 {
+            tab.scroll.0 = tab.cursor.0;
+        } else if tab.cursor.0 >= tab.scroll.0 + visible_height {
+            tab.scroll.0 = tab.cursor.0 - visible_height + 1;
         }
     }
 
+    // ==================== Display ====================
+
     /// Get title for display
     fn title(&self) -> String {
-        let name = self
-            .file_path
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "[New]".to_string());
+        let tab = self.active_tab();
+        let name = tab.display_name();
 
-        let syntax = self
-            .highlighter
-            .detect_syntax(self.file_path.as_deref());
+        let syntax = self.highlighter.detect_syntax(tab.file_path.as_deref());
 
-        let diff_indicator = if self.diff_tracker.is_tracking() {
+        let diff_indicator = if tab.diff_tracker.is_tracking() {
             " [DIFF]"
         } else {
             ""
         };
 
-        // Add scroll indicator
         let scroll_info = crate::ui::scroll::scroll_indicator(
-            self.scroll.0,
+            tab.scroll.0,
             self.visible_height,
-            self.lines.len(),
+            tab.lines.len(),
         );
 
-        let modified_marker = if self.modified { " •" } else { "" };
+        let modified_marker = if tab.modified { " *" } else { "" };
 
         format!(" {}{} ({}){}{} ", name, modified_marker, syntax, diff_indicator, scroll_info)
     }
@@ -364,21 +550,49 @@ impl super::Panel for EditorPanel {
 
     fn handle_input(&mut self, event: &Event, state: &mut AppState) -> Result<bool> {
         if let Event::Key(key) = event {
+            // Tab navigation keys (work in all modes)
+            match (key.code, key.modifiers) {
+                // Ctrl+Tab: next tab
+                (KeyCode::Tab, m) if m.contains(KeyModifiers::CONTROL) => {
+                    if m.contains(KeyModifiers::SHIFT) {
+                        self.prev_tab();
+                    } else {
+                        self.next_tab();
+                    }
+                    return Ok(true);
+                }
+                // Ctrl+W: close current tab
+                (KeyCode::Char('w'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    self.close_current_tab();
+                    return Ok(true);
+                }
+                // Alt+1-9: switch to tab by number
+                (KeyCode::Char(c), m) if m.contains(KeyModifiers::ALT) && c.is_ascii_digit() => {
+                    let idx = c.to_digit(10).unwrap_or(0) as usize;
+                    if idx > 0 && idx <= self.tabs.len() {
+                        self.switch_tab(idx - 1);
+                    }
+                    return Ok(true);
+                }
+                _ => {}
+            }
+
             // Handle PageUp/PageDown in both modes
             match key.code {
                 KeyCode::PageUp => {
                     self.scroll_page_up();
-                    // Move cursor to stay in view
-                    if self.cursor.0 >= self.scroll.0 + self.visible_height {
-                        self.cursor.0 = self.scroll.0 + self.visible_height - 1;
+                    let visible_height = self.visible_height;
+                    let tab = &mut self.tabs[self.active_tab];
+                    if tab.cursor.0 >= tab.scroll.0 + visible_height {
+                        tab.cursor.0 = tab.scroll.0 + visible_height - 1;
                     }
                     return Ok(true);
                 }
                 KeyCode::PageDown => {
                     self.scroll_page_down();
-                    // Move cursor to stay in view
-                    if self.cursor.0 < self.scroll.0 {
-                        self.cursor.0 = self.scroll.0;
+                    let tab = &mut self.tabs[self.active_tab];
+                    if tab.cursor.0 < tab.scroll.0 {
+                        tab.cursor.0 = tab.scroll.0;
                     }
                     return Ok(true);
                 }
@@ -388,7 +602,6 @@ impl super::Panel for EditorPanel {
             // Normal mode: vim-style navigation + arrow key scrolling
             if !state.input_mode.is_editing() {
                 return match key.code {
-                    // Arrow keys scroll the view
                     KeyCode::Up => {
                         self.scroll_up(1);
                         Ok(true)
@@ -398,14 +611,13 @@ impl super::Panel for EditorPanel {
                         Ok(true)
                     }
                     KeyCode::Left => {
-                        self.scroll.1 = self.scroll.1.saturating_sub(1);
+                        self.active_tab_mut().scroll.1 = self.active_tab().scroll.1.saturating_sub(1);
                         Ok(true)
                     }
                     KeyCode::Right => {
-                        self.scroll.1 += 1;
+                        self.active_tab_mut().scroll.1 += 1;
                         Ok(true)
                     }
-                    // Vim keys move cursor
                     KeyCode::Char('j') => {
                         self.move_cursor(Direction::Down);
                         Ok(true)
@@ -422,7 +634,6 @@ impl super::Panel for EditorPanel {
                         self.move_cursor(Direction::Right);
                         Ok(true)
                     }
-                    // Ctrl+U/D for half-page scroll
                     KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         self.scroll_half_page_up();
                         Ok(true)
@@ -431,26 +642,29 @@ impl super::Panel for EditorPanel {
                         self.scroll_half_page_down();
                         Ok(true)
                     }
-                    // g/G for top/bottom
                     KeyCode::Char('g') => {
-                        self.cursor = (0, 0);
-                        self.scroll.0 = 0;
+                        let tab = self.active_tab_mut();
+                        tab.cursor = (0, 0);
+                        tab.scroll.0 = 0;
                         Ok(true)
                     }
                     KeyCode::Char('G') => {
-                        self.cursor.0 = self.lines.len().saturating_sub(1);
-                        self.cursor.1 = 0;
+                        let tab = self.active_tab_mut();
+                        tab.cursor.0 = tab.lines.len().saturating_sub(1);
+                        tab.cursor.1 = 0;
                         self.ensure_cursor_visible();
                         Ok(true)
                     }
                     KeyCode::Home => {
-                        self.cursor = (0, 0);
-                        self.scroll.0 = 0;
+                        let tab = self.active_tab_mut();
+                        tab.cursor = (0, 0);
+                        tab.scroll.0 = 0;
                         Ok(true)
                     }
                     KeyCode::End => {
-                        self.cursor.0 = self.lines.len().saturating_sub(1);
-                        self.cursor.1 = 0;
+                        let tab = self.active_tab_mut();
+                        tab.cursor.0 = tab.lines.len().saturating_sub(1);
+                        tab.cursor.1 = 0;
                         self.ensure_cursor_visible();
                         Ok(true)
                     }
@@ -493,11 +707,12 @@ impl super::Panel for EditorPanel {
                     Ok(true)
                 }
                 KeyCode::Home => {
-                    self.cursor.1 = 0;
+                    self.active_tab_mut().cursor.1 = 0;
                     Ok(true)
                 }
                 KeyCode::End => {
-                    self.cursor.1 = self.current_line().chars().count();
+                    let tab = self.active_tab_mut();
+                    tab.cursor.1 = tab.current_line().chars().count();
                     Ok(true)
                 }
                 _ => Ok(false),
@@ -514,48 +729,90 @@ impl super::Panel for EditorPanel {
             Style::default().fg(Color::DarkGray)
         };
 
+        // Create outer block with title
         let block = Block::default()
             .title(self.title())
             .borders(Borders::ALL)
             .border_style(border_style);
 
         let inner = block.inner(area);
-        let visible_height = inner.height as usize;
 
-        // Calculate line number width (+ 1 for diff gutter)
-        let line_count = self.lines.len();
-        let gutter_width = format!("{}", line_count).len() + 2; // +2 for diff marker and space
+        // Split inner area: tab bar (1 line) + content
+        let chunks = Layout::default()
+            .direction(LayoutDirection::Vertical)
+            .constraints([
+                Constraint::Length(1), // Tab bar
+                Constraint::Min(1),    // Content
+            ])
+            .split(inner);
 
-        // Use stored scroll position
-        let scroll_y = self.scroll.0;
+        let tab_bar_area = chunks[0];
+        let content_area = chunks[1];
+        let visible_height = content_area.height as usize;
+
+        // Render outer block
+        frame.render_widget(block, area);
+
+        // Render tab bar
+        let tab_titles: Vec<Line> = self.tabs.iter().enumerate().map(|(idx, tab)| {
+            let name = tab.display_name();
+            let modified = if tab.modified { "*" } else { "" };
+            let title = format!(" {}{} ", name, modified);
+
+            if idx == self.active_tab {
+                Line::from(Span::styled(
+                    title,
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Line::from(Span::styled(
+                    title,
+                    Style::default().fg(Color::DarkGray),
+                ))
+            }
+        }).collect();
+
+        let tabs_widget = Tabs::new(tab_titles)
+            .style(Style::default().fg(Color::DarkGray))
+            .highlight_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .select(self.active_tab)
+            .divider(Span::raw("|"));
+
+        frame.render_widget(tabs_widget, tab_bar_area);
+
+        // Get active tab data for rendering content
+        let tab = self.active_tab();
+
+        // Calculate line number width
+        let line_count = tab.lines.len();
+        let gutter_width = format!("{}", line_count).len() + 2;
+
+        let scroll_y = tab.scroll.0;
 
         // Build lines with syntax highlighting
-        let lines: Vec<Line> = self
+        let lines: Vec<Line> = tab
             .lines
             .iter()
             .enumerate()
             .skip(scroll_y)
             .take(visible_height)
             .map(|(idx, line)| {
-                // Get diff change type
-                let change = self.diff_tracker.get_line_change(idx);
+                let change = tab.diff_tracker.get_line_change(idx);
 
-                // Diff gutter marker
                 let diff_marker = Span::styled(
                     format!("{}", change.gutter_char()),
                     change.gutter_style(),
                 );
 
-                // Line number
                 let line_num = format!("{:>width$} ", idx + 1, width = gutter_width - 2);
                 let line_num_style = Style::default().fg(Color::DarkGray);
 
-                // Get highlighted content or use cached
-                let content_spans: Vec<Span> = if idx < self.highlighted_lines.len() {
-                    self.highlighted_lines[idx]
+                let content_spans: Vec<Span> = if idx < tab.highlighted_lines.len() {
+                    tab.highlighted_lines[idx]
                         .iter()
                         .map(|(text, style)| {
-                            // Apply line background for diffs
                             let mut s = *style;
                             if let Some(bg_style) = change.line_bg_style() {
                                 s = s.bg(bg_style.bg.unwrap_or(Color::Reset));
@@ -564,11 +821,9 @@ impl super::Panel for EditorPanel {
                         })
                         .collect()
                 } else {
-                    // Fallback: plain text
                     vec![Span::raw(line.clone())]
                 };
 
-                // Build line with gutter
                 let mut spans = vec![
                     diff_marker,
                     Span::styled(line_num, line_num_style),
@@ -579,18 +834,18 @@ impl super::Panel for EditorPanel {
             })
             .collect();
 
-        // Show scroll position indicator in title if scrolled
-        let paragraph = Paragraph::new(lines).block(block);
-        frame.render_widget(paragraph, area);
+        let paragraph = Paragraph::new(lines);
+        frame.render_widget(paragraph, content_area);
 
-        // Show cursor if focused and cursor is in view
+        // Show cursor if focused and in view
         if focused {
-            // Check if cursor is within visible range
-            if self.cursor.0 >= scroll_y && self.cursor.0 < scroll_y + visible_height {
-                let cursor_x = inner.x + gutter_width as u16 + self.cursor.1 as u16;
-                let cursor_y = inner.y + (self.cursor.0 - scroll_y) as u16;
+            if tab.cursor.0 >= scroll_y && tab.cursor.0 < scroll_y + visible_height {
+                let cursor_x = content_area.x + gutter_width as u16 + tab.cursor.1 as u16;
+                let cursor_y = content_area.y + (tab.cursor.0 - scroll_y) as u16;
 
-                if cursor_x < inner.x + inner.width && cursor_y < inner.y + inner.height {
+                if cursor_x < content_area.x + content_area.width
+                    && cursor_y < content_area.y + content_area.height
+                {
                     frame.set_cursor_position((cursor_x, cursor_y));
                 }
             }
@@ -598,7 +853,7 @@ impl super::Panel for EditorPanel {
     }
 
     fn on_resize(&mut self, _cols: u16, rows: u16) {
-        // Update visible height (account for borders)
-        self.visible_height = rows.saturating_sub(2) as usize;
+        // Update visible height (account for borders + tab bar)
+        self.visible_height = rows.saturating_sub(3) as usize;
     }
 }
