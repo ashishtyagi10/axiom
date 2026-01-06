@@ -137,15 +137,16 @@ impl PanelRegistry {
 
     /// Notify all panels of resize
     pub fn notify_resize(&mut self, terminal_area: Rect) {
-        // Terminal panel needs special handling for PTY resize
-        self.terminal.on_resize(terminal_area.width, terminal_area.height.saturating_sub(2));
+        // Terminal panel handles border calculations internally
+        self.terminal.on_resize(terminal_area.width, terminal_area.height);
     }
 
     /// Notify all panels of resize with full layout
     pub fn notify_resize_all(&mut self, layout: &crate::ui::AppLayout) {
         self.file_tree.on_resize(layout.file_tree.width, layout.file_tree.height);
         self.editor.on_resize(layout.editor.width, layout.editor.height);
-        self.terminal.on_resize(layout.terminal.width, layout.terminal.height.saturating_sub(2));
+        // Terminal panel handles border calculations internally
+        self.terminal.on_resize(layout.terminal.width, layout.terminal.height);
         self.chat.on_resize(layout.chat.width, layout.chat.height);
     }
 

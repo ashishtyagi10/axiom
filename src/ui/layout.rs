@@ -37,6 +37,18 @@ pub struct AppLayout {
 /// │                    Status                    │
 /// └─────────────────────────────────────────────┘
 /// ```
+///
+/// Layout (terminal focused - expanded):
+/// ```text
+/// ┌─────────┬─────────────────────────┬─────────┐
+/// │         │      Editor (30%)       │         │
+/// │  Files  ├─────────────────────────┤  Chat   │
+/// │  (20%)  │     Terminal (70%)      │  (20%)  │
+/// │         │                         │         │
+/// ├─────────┴─────────────────────────┴─────────┤
+/// │                    Status                    │
+/// └─────────────────────────────────────────────┘
+/// ```
 pub fn get_layout(area: Rect) -> AppLayout {
     get_layout_with_focus(area, None)
 }
@@ -76,12 +88,19 @@ pub fn get_layout_with_focus(area: Rect, focused: Option<PanelId>) -> AppLayout 
     let middle = h_chunks[1];
     let chat = h_chunks[2];
 
+    // Determine editor/terminal split based on focus
+    let (editor_pct, terminal_pct) = match focused {
+        Some(PanelId::TERMINAL) => (30, 70), // Terminal expanded when focused
+        Some(PanelId::EDITOR) => (70, 30),   // Editor expanded when focused
+        _ => (60, 40),                        // Default
+    };
+
     // Vertical split in middle: editor | terminal
     let v_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(60), // Editor
-            Constraint::Percentage(40), // Terminal
+            Constraint::Percentage(editor_pct),
+            Constraint::Percentage(terminal_pct),
         ])
         .split(middle);
 

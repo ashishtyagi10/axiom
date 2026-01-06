@@ -230,33 +230,44 @@ impl super::Panel for TerminalPanel {
 
         frame.render_widget(paragraph, area);
 
-        // Draw cursor if focused
+        // Draw cursor if focused and cursor is visible
+        // Some applications (like Claude Code) draw their own cursor and hide the terminal cursor
         if focused {
             let parser = self.parser.read();
-            let cursor = parser.screen().cursor_position();
-            let cursor_x = inner.x + cursor.1 as u16;
-            let cursor_y = inner.y + cursor.0 as u16;
+            let screen = parser.screen();
 
-            if cursor_x < inner.x + inner.width && cursor_y < inner.y + inner.height {
-                frame.set_cursor_position((cursor_x, cursor_y));
+            // Only show cursor if the application hasn't hidden it
+            if !screen.hide_cursor() {
+                let cursor = screen.cursor_position();
+                let cursor_x = inner.x + cursor.1 as u16;
+                let cursor_y = inner.y + cursor.0 as u16;
+
+                if cursor_x < inner.x + inner.width && cursor_y < inner.y + inner.height {
+                    frame.set_cursor_position((cursor_x, cursor_y));
+                }
             }
         }
     }
 
     fn on_resize(&mut self, cols: u16, rows: u16) {
         // CRITICAL: Resize PTY when panel size changes
-        // This fixes the 24x80 hardcoded issue from nterm
-        let rows = rows.saturating_sub(2); // Account for borders
+        // Account for borders on all sides (top/bottom and left/right)
+        let inner_rows = rows.saturating_sub(2); // Top and bottom borders
+        let inner_cols = cols.saturating_sub(2); // Left and right borders
 
-        if let Err(e) = self.pty.resize(cols, rows) {
+        // Ensure minimum size to prevent issues
+        let inner_cols = inner_cols.max(1);
+        let inner_rows = inner_rows.max(1);
+
+        if let Err(e) = self.pty.resize(inner_cols, inner_rows) {
             eprintln!("PTY resize failed: {}", e);
         }
 
-        // Also resize the parser
+        // Also resize the parser to match PTY size
         let mut parser = self.parser.write();
-        parser.set_size(rows, cols);
+        parser.set_size(inner_rows, inner_cols);
 
-        self.size = (cols, rows);
+        self.size = (inner_cols, inner_rows);
     }
 
     fn on_focus(&mut self) {
