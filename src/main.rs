@@ -279,7 +279,11 @@ fn handle_event(
                     // Focus the panel if not already focused
                     if panel_id != state.focus.current() {
                         state.focus.focus(panel_id);
-                        panels.get_mut(panel_id).on_focus();
+                        // Reset to normal mode when switching panels via mouse click
+                        // This ensures Tab works after clicking to focus a panel
+                        state.input_mode.to_normal();
+                        // Call handle_focus_change like Tab does (notifies all panels, recalculates layout)
+                        panels.handle_focus_change(state.focus.current(), screen_area);
                     }
                     // Forward the click event to the panel for handling (e.g., tab clicks, file selection)
                     panels.get_mut(panel_id).handle_input(event, state)?;
