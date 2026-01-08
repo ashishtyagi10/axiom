@@ -554,8 +554,6 @@ fn handle_event(
             // Wake an idle agent (used for persistent Conductor)
             let mut registry = panels.agent_registry.write();
             if let Some(agent) = registry.get_mut(*id) {
-                // Add separator for new interaction in output
-                agent.output.push_str("\n─────────────────────────────────────\n");
                 agent.status = axiom::agents::AgentStatus::Running;
             }
             drop(registry);
