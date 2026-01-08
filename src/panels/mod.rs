@@ -12,11 +12,12 @@ pub use file_tree::FileTreePanel;
 pub use terminal::TerminalPanel;
 pub use chat::ChatPanel;
 
+use crate::config::AxiomConfig;
 use crate::core::Result;
 use crate::events::Event;
 use crate::llm::ProviderRegistry;
 use crate::state::{AppState, PanelId};
-use crate::ui::ModelSelector;
+use crate::ui::{ModelSelector, SettingsModal};
 use ratatui::layout::Rect;
 use ratatui::Frame;
 use std::sync::Arc;
@@ -68,6 +69,8 @@ pub struct PanelRegistry {
     pub terminal: TerminalPanel,
     pub chat: ChatPanel,
     pub model_selector: ModelSelector,
+    /// Settings modal
+    pub settings: SettingsModal,
     /// Cached model badge area for click detection
     pub model_badge_area: Option<Rect>,
     /// LLM provider registry for multi-provider support
@@ -80,6 +83,7 @@ impl PanelRegistry {
         event_tx: crossbeam_channel::Sender<Event>,
         cwd: &std::path::Path,
         llm_registry: ProviderRegistry,
+        config: &AxiomConfig,
     ) -> Result<Self> {
         let registry = Arc::new(RwLock::new(llm_registry));
 
@@ -95,9 +99,24 @@ impl PanelRegistry {
             terminal: TerminalPanel::new(event_tx.clone(), cwd)?,
             chat: ChatPanel::new(event_tx, provider),
             model_selector: ModelSelector::new(),
+            settings: SettingsModal::new(config),
             model_badge_area: None,
             llm_registry: registry,
         })
+    }
+
+    /// Open the settings modal with current configuration
+    pub fn open_settings(&mut self, config: &AxiomConfig) {
+        self.settings = SettingsModal::new(config);
+    }
+
+    /// Apply settings and return updated config if there are changes
+    pub fn apply_settings(&self) -> Option<AxiomConfig> {
+        if self.settings.has_changes() {
+            Some(self.settings.to_config())
+        } else {
+            None
+        }
     }
 
     /// Check if click is on model badge

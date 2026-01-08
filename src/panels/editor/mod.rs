@@ -5,12 +5,19 @@
 //! - Git-style diff tracking for LLM modifications
 //! - Vim-style cursor movement
 //! - Multi-file tabs support
+//! - Text selection with Shift+Arrow keys
+//! - Clipboard operations (Ctrl+C/X/V)
+//! - Undo/redo (Ctrl+Z/Y)
 
 mod diff;
 mod highlight;
+mod selection;
+mod undo;
 
 pub use diff::DiffTracker;
 pub use highlight::Highlighter;
+pub use selection::{Position, Selection};
+pub use undo::{EditOp, UndoStack};
 
 use crate::core::Result;
 use crate::events::Event;
@@ -45,6 +52,10 @@ pub struct FileTab {
     pub diff_tracker: DiffTracker,
     /// Whether highlight cache is dirty
     pub highlight_dirty: bool,
+    /// Text selection state
+    pub selection: Selection,
+    /// Undo history
+    pub undo_stack: UndoStack,
 }
 
 impl FileTab {
@@ -59,6 +70,8 @@ impl FileTab {
             highlighted_lines: Vec::new(),
             diff_tracker: DiffTracker::new(),
             highlight_dirty: true,
+            selection: Selection::new(),
+            undo_stack: UndoStack::new(),
         }
     }
 
@@ -73,6 +86,8 @@ impl FileTab {
             highlighted_lines: Vec::new(),
             diff_tracker: DiffTracker::new(),
             highlight_dirty: true,
+            selection: Selection::new(),
+            undo_stack: UndoStack::new(),
         }
     }
 
@@ -348,6 +363,247 @@ impl EditorPanel {
         }
     }
 
+    // ==================== Selection ====================
+
+    /// Get cursor as Position
+    fn cursor_pos(&self) -> Position {
+        let tab = self.active_tab();
+        Position::new(tab.cursor.0, tab.cursor.1)
+    }
+
+    /// Start or extend selection based on shift key
+    fn handle_selection(&mut self, shift_held: bool) {
+        let tab = self.active_tab_mut();
+        let cursor_pos = Position::new(tab.cursor.0, tab.cursor.1);
+
+        if shift_held {
+            if !tab.selection.is_active() {
+                tab.selection.start(cursor_pos);
+            }
+        } else {
+            tab.selection.clear();
+        }
+    }
+
+    /// Get selected text
+    fn get_selected_text(&self) -> Option<String> {
+        let tab = self.active_tab();
+        let cursor_pos = Position::new(tab.cursor.0, tab.cursor.1);
+        tab.selection.get_text(cursor_pos, &tab.lines)
+    }
+
+    /// Delete text in range and return deleted text
+    fn delete_range(&mut self, start: Position, end: Position) {
+        let tab = self.active_tab_mut();
+
+        if start.line == end.line {
+            // Single line deletion
+            let line = &mut tab.lines[start.line];
+            let start_byte: usize = line.chars().take(start.column).map(|c| c.len_utf8()).sum();
+            let end_byte: usize = line.chars().take(end.column).map(|c| c.len_utf8()).sum();
+            line.drain(start_byte..end_byte);
+        } else {
+            // Multi-line deletion
+            // Keep part of first line before start
+            let first_line = &tab.lines[start.line];
+            let start_byte: usize = first_line.chars().take(start.column).map(|c| c.len_utf8()).sum();
+            let first_part = first_line[..start_byte].to_string();
+
+            // Keep part of last line after end
+            let last_line = &tab.lines[end.line];
+            let end_byte: usize = last_line.chars().take(end.column).map(|c| c.len_utf8()).sum();
+            let last_part = last_line[end_byte..].to_string();
+
+            // Remove lines from end.line down to start.line+1
+            for _ in (start.line + 1)..=end.line {
+                if start.line + 1 < tab.lines.len() {
+                    tab.lines.remove(start.line + 1);
+                }
+            }
+
+            // Combine first and last parts
+            tab.lines[start.line] = first_part + &last_part;
+        }
+
+        tab.modified = true;
+        tab.highlight_dirty = true;
+    }
+
+    /// Delete selection and return deleted text
+    fn delete_selection(&mut self) -> Option<String> {
+        let cursor_pos = self.cursor_pos();
+        let tab = self.active_tab();
+
+        if let Some((start, end)) = tab.selection.range(cursor_pos) {
+            let deleted = tab.selection.get_text(cursor_pos, &tab.lines)?;
+
+            // Record for undo
+            let tab = self.active_tab_mut();
+            tab.undo_stack.push(EditOp::Delete {
+                start,
+                end,
+                deleted_text: deleted.clone(),
+            });
+
+            // Perform deletion
+            self.delete_range(start, end);
+
+            // Clear selection and move cursor to start
+            let tab = self.active_tab_mut();
+            tab.selection.clear();
+            tab.cursor = (start.line, start.column);
+
+            self.update_diff();
+            Some(deleted)
+        } else {
+            None
+        }
+    }
+
+    /// Insert text at cursor position
+    fn insert_text(&mut self, text: &str) {
+        for c in text.chars() {
+            if c == '\n' {
+                self.newline();
+            } else {
+                self.insert_char(c);
+            }
+        }
+    }
+
+    // ==================== Clipboard Operations ====================
+
+    /// Copy selection to clipboard
+    fn copy_selection(&mut self) -> bool {
+        if let Some(text) = self.get_selected_text() {
+            crate::clipboard::copy(&text).is_ok()
+        } else {
+            false
+        }
+    }
+
+    /// Cut selection to clipboard
+    fn cut_selection(&mut self) -> bool {
+        if let Some(text) = self.get_selected_text() {
+            if crate::clipboard::copy(&text).is_ok() {
+                self.delete_selection();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Paste from clipboard
+    fn paste(&mut self) -> bool {
+        if let Ok(text) = crate::clipboard::paste() {
+            // Delete selection first if any
+            self.delete_selection();
+
+            let start_pos = self.cursor_pos();
+
+            // Insert text
+            self.insert_text(&text);
+
+            // Record for undo
+            let tab = self.active_tab_mut();
+            tab.undo_stack.push(EditOp::Insert {
+                pos: start_pos,
+                text,
+            });
+
+            return true;
+        }
+        false
+    }
+
+    // ==================== Undo/Redo ====================
+
+    /// Undo last operation
+    fn undo(&mut self) -> bool {
+        let op = {
+            let tab = self.active_tab_mut();
+            tab.undo_stack.pop_undo()
+        };
+
+        if let Some(op) = op {
+            match op.clone() {
+                EditOp::Insert { pos, text } => {
+                    // Undo insert = delete the text
+                    let end = self.calculate_end_position(pos, &text);
+                    self.delete_range(pos, end);
+                    let tab = self.active_tab_mut();
+                    tab.cursor = (pos.line, pos.column);
+                    tab.undo_stack.push_redo(op);
+                }
+                EditOp::Delete { start, deleted_text, .. } => {
+                    // Undo delete = insert the text
+                    {
+                        let tab = self.active_tab_mut();
+                        tab.cursor = (start.line, start.column);
+                    }
+                    self.insert_text(&deleted_text);
+                    let tab = self.active_tab_mut();
+                    tab.undo_stack.push_redo(op);
+                }
+            }
+            self.active_tab_mut().highlight_dirty = true;
+            self.update_diff();
+            return true;
+        }
+        false
+    }
+
+    /// Redo last undone operation
+    fn redo(&mut self) -> bool {
+        let op = {
+            let tab = self.active_tab_mut();
+            tab.undo_stack.pop_redo()
+        };
+
+        if let Some(op) = op {
+            match op.clone() {
+                EditOp::Insert { pos, text } => {
+                    // Redo insert = insert the text again
+                    {
+                        let tab = self.active_tab_mut();
+                        tab.cursor = (pos.line, pos.column);
+                    }
+                    self.insert_text(&text);
+                    let tab = self.active_tab_mut();
+                    tab.undo_stack.push(op);
+                }
+                EditOp::Delete { start, end, .. } => {
+                    // Redo delete = delete again
+                    self.delete_range(start, end);
+                    let tab = self.active_tab_mut();
+                    tab.cursor = (start.line, start.column);
+                    tab.undo_stack.push(op);
+                }
+            }
+            self.active_tab_mut().highlight_dirty = true;
+            self.update_diff();
+            return true;
+        }
+        false
+    }
+
+    /// Calculate end position after inserting text
+    fn calculate_end_position(&self, start: Position, text: &str) -> Position {
+        let lines: Vec<&str> = text.lines().collect();
+        if lines.is_empty() {
+            return start;
+        }
+
+        if lines.len() == 1 {
+            Position::new(start.line, start.column + lines[0].chars().count())
+        } else {
+            Position::new(
+                start.line + lines.len() - 1,
+                lines.last().map(|l| l.chars().count()).unwrap_or(0),
+            )
+        }
+    }
+
     // ==================== Editing Operations ====================
 
     /// Insert character at cursor
@@ -599,6 +855,42 @@ impl super::Panel for EditorPanel {
                     }
                     return Ok(true);
                 }
+                // Ctrl+C: Copy selection
+                (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    if self.copy_selection() {
+                        state.info("Copied to clipboard".to_string());
+                    }
+                    return Ok(true);
+                }
+                // Ctrl+X: Cut selection
+                (KeyCode::Char('x'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    if self.cut_selection() {
+                        self.refresh_highlighting();
+                        state.info("Cut to clipboard".to_string());
+                    }
+                    return Ok(true);
+                }
+                // Ctrl+V: Paste
+                (KeyCode::Char('v'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    if self.paste() {
+                        self.refresh_highlighting();
+                    }
+                    return Ok(true);
+                }
+                // Ctrl+Z: Undo
+                (KeyCode::Char('z'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    if self.undo() {
+                        self.refresh_highlighting();
+                    }
+                    return Ok(true);
+                }
+                // Ctrl+Y: Redo
+                (KeyCode::Char('y'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    if self.redo() {
+                        self.refresh_highlighting();
+                    }
+                    return Ok(true);
+                }
                 _ => {}
             }
 
@@ -699,47 +991,80 @@ impl super::Panel for EditorPanel {
             }
 
             // Insert mode: editing
+            let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
             match key.code {
                 KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    // Clear selection and delete if typing over selection
+                    if self.active_tab().selection.is_active() {
+                        self.delete_selection();
+                    }
                     self.insert_char(c);
                     Ok(true)
                 }
                 KeyCode::Backspace => {
-                    self.backspace();
+                    // Delete selection if active, otherwise normal backspace
+                    if self.active_tab().selection.is_active() {
+                        self.delete_selection();
+                        self.refresh_highlighting();
+                    } else {
+                        self.backspace();
+                    }
                     Ok(true)
                 }
                 KeyCode::Delete => {
-                    self.delete();
+                    // Delete selection if active, otherwise normal delete
+                    if self.active_tab().selection.is_active() {
+                        self.delete_selection();
+                        self.refresh_highlighting();
+                    } else {
+                        self.delete();
+                    }
                     Ok(true)
                 }
                 KeyCode::Enter => {
+                    // Clear selection if active
+                    if self.active_tab().selection.is_active() {
+                        self.delete_selection();
+                    }
                     self.newline();
                     Ok(true)
                 }
                 KeyCode::Up => {
+                    self.handle_selection(shift);
                     self.move_cursor(Direction::Up);
                     Ok(true)
                 }
                 KeyCode::Down => {
+                    self.handle_selection(shift);
                     self.move_cursor(Direction::Down);
                     Ok(true)
                 }
                 KeyCode::Left => {
+                    self.handle_selection(shift);
                     self.move_cursor(Direction::Left);
                     Ok(true)
                 }
                 KeyCode::Right => {
+                    self.handle_selection(shift);
                     self.move_cursor(Direction::Right);
                     Ok(true)
                 }
                 KeyCode::Home => {
+                    self.handle_selection(shift);
                     self.active_tab_mut().cursor.1 = 0;
                     Ok(true)
                 }
                 KeyCode::End => {
+                    self.handle_selection(shift);
                     let tab = self.active_tab_mut();
                     tab.cursor.1 = tab.current_line().chars().count();
                     Ok(true)
+                }
+                KeyCode::Esc => {
+                    // Escape clears selection
+                    self.active_tab_mut().selection.clear();
+                    Ok(false) // Let Escape propagate for mode change
                 }
                 _ => Ok(false),
             }
@@ -896,6 +1221,10 @@ impl super::Panel for EditorPanel {
 
         let scroll_y = tab.scroll.0;
 
+        // Get selection range for highlighting
+        let cursor_pos = Position::new(tab.cursor.0, tab.cursor.1);
+        let selection_bg = Color::Rgb(60, 80, 120); // Selection background color
+
         // Build lines with syntax highlighting
         let lines: Vec<Line> = tab
             .lines
@@ -914,17 +1243,78 @@ impl super::Panel for EditorPanel {
                 let line_num = format!("{:>width$} ", idx + 1, width = gutter_width - 2);
                 let line_num_style = Style::default().fg(Color::DarkGray);
 
+                // Get selection range on this line if any
+                let line_char_count = line.chars().count();
+                let selection_range = tab.selection.line_range(cursor_pos, idx, line_char_count);
+
                 let content_spans: Vec<Span> = if idx < tab.highlighted_lines.len() {
-                    tab.highlighted_lines[idx]
-                        .iter()
-                        .map(|(text, style)| {
+                    // Apply selection highlighting to syntax-highlighted spans
+                    let mut result_spans = Vec::new();
+                    let mut char_pos = 0;
+
+                    for (text, style) in &tab.highlighted_lines[idx] {
+                        let text_char_count = text.chars().count();
+                        let span_start = char_pos;
+                        let span_end = char_pos + text_char_count;
+
+                        if let Some((sel_start, sel_end)) = selection_range {
+                            // Check if this span overlaps with selection
+                            if span_end > sel_start && span_start < sel_end {
+                                // Split span into parts: before, selected, after
+                                let text_chars: Vec<char> = text.chars().collect();
+
+                                // Part before selection
+                                if span_start < sel_start {
+                                    let before_end = (sel_start - span_start).min(text_chars.len());
+                                    let before: String = text_chars[..before_end].iter().collect();
+                                    let mut s = *style;
+                                    if let Some(bg_style) = change.line_bg_style() {
+                                        s = s.bg(bg_style.bg.unwrap_or(Color::Reset));
+                                    }
+                                    result_spans.push(Span::styled(before, s));
+                                }
+
+                                // Selected part
+                                let sel_local_start = sel_start.saturating_sub(span_start);
+                                let sel_local_end = (sel_end - span_start).min(text_chars.len());
+                                if sel_local_start < text_chars.len() && sel_local_end > sel_local_start {
+                                    let selected: String = text_chars[sel_local_start..sel_local_end].iter().collect();
+                                    let s = style.bg(selection_bg);
+                                    result_spans.push(Span::styled(selected, s));
+                                }
+
+                                // Part after selection
+                                if span_end > sel_end {
+                                    let after_start = sel_end.saturating_sub(span_start);
+                                    if after_start < text_chars.len() {
+                                        let after: String = text_chars[after_start..].iter().collect();
+                                        let mut s = *style;
+                                        if let Some(bg_style) = change.line_bg_style() {
+                                            s = s.bg(bg_style.bg.unwrap_or(Color::Reset));
+                                        }
+                                        result_spans.push(Span::styled(after, s));
+                                    }
+                                }
+                            } else {
+                                // No overlap with selection
+                                let mut s = *style;
+                                if let Some(bg_style) = change.line_bg_style() {
+                                    s = s.bg(bg_style.bg.unwrap_or(Color::Reset));
+                                }
+                                result_spans.push(Span::styled(text.clone(), s));
+                            }
+                        } else {
+                            // No selection - normal rendering
                             let mut s = *style;
                             if let Some(bg_style) = change.line_bg_style() {
                                 s = s.bg(bg_style.bg.unwrap_or(Color::Reset));
                             }
-                            Span::styled(text.clone(), s)
-                        })
-                        .collect()
+                            result_spans.push(Span::styled(text.clone(), s));
+                        }
+
+                        char_pos = span_end;
+                    }
+                    result_spans
                 } else {
                     vec![Span::raw(line.clone())]
                 };
@@ -964,5 +1354,10 @@ impl super::Panel for EditorPanel {
     fn on_resize(&mut self, _cols: u16, rows: u16) {
         // Update visible height (account for borders + tab bar)
         self.visible_height = rows.saturating_sub(3) as usize;
+    }
+
+    fn on_blur(&mut self) {
+        // Clear selection when losing focus
+        self.active_tab_mut().selection.clear();
     }
 }

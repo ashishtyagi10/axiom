@@ -234,7 +234,7 @@ impl super::Panel for FileTreePanel {
         "Files"
     }
 
-    fn handle_input(&mut self, event: &Event, _state: &mut AppState) -> Result<bool> {
+    fn handle_input(&mut self, event: &Event, state: &mut AppState) -> Result<bool> {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -277,6 +277,16 @@ impl super::Panel for FileTreePanel {
                 }
                 KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.refresh();
+                    Ok(true)
+                }
+                // Ctrl+C: Copy selected file/directory path to clipboard
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if let Some(entry) = self.entries.get(self.selected) {
+                        let path_str = entry.path.to_string_lossy().to_string();
+                        if crate::clipboard::copy(&path_str).is_ok() {
+                            state.info(format!("Copied: {}", path_str));
+                        }
+                    }
                     Ok(true)
                 }
                 _ => Ok(false),

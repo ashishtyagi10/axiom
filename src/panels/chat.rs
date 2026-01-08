@@ -123,6 +123,9 @@ pub struct ChatPanel {
     /// Input cursor position
     cursor: usize,
 
+    /// Selection anchor position (where selection started)
+    selection_anchor: Option<usize>,
+
     /// Whether AI is currently generating
     is_generating: bool,
 
@@ -155,6 +158,7 @@ impl ChatPanel {
             }],
             input: String::new(),
             cursor: 0,
+            selection_anchor: None,
             is_generating: false,
             streaming_buffer: String::new(),
             llm,
@@ -272,6 +276,79 @@ impl ChatPanel {
             self.input.remove(new_cursor);
             self.cursor = new_cursor;
         }
+    }
+
+    // ==================== Selection ====================
+
+    /// Start or extend selection based on shift key
+    fn handle_selection(&mut self, shift_held: bool) {
+        if shift_held {
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.cursor);
+            }
+        } else {
+            self.selection_anchor = None;
+        }
+    }
+
+    /// Get selection range (start, end) normalized
+    fn get_selection_range(&self) -> Option<(usize, usize)> {
+        self.selection_anchor.map(|anchor| {
+            if anchor <= self.cursor {
+                (anchor, self.cursor)
+            } else {
+                (self.cursor, anchor)
+            }
+        })
+    }
+
+    /// Get selected text
+    fn get_selected_text(&self) -> Option<String> {
+        let (start, end) = self.get_selection_range()?;
+        Some(self.input[start..end].to_string())
+    }
+
+    /// Delete selection and return deleted text
+    fn delete_selection(&mut self) -> Option<String> {
+        let (start, end) = self.get_selection_range()?;
+        let deleted: String = self.input.drain(start..end).collect();
+        self.cursor = start;
+        self.selection_anchor = None;
+        Some(deleted)
+    }
+
+    // ==================== Clipboard ====================
+
+    /// Copy selection to clipboard
+    fn copy_selection(&self) -> bool {
+        if let Some(text) = self.get_selected_text() {
+            crate::clipboard::copy(&text).is_ok()
+        } else {
+            false
+        }
+    }
+
+    /// Cut selection to clipboard
+    fn cut_selection(&mut self) -> bool {
+        if let Some(text) = self.get_selected_text() {
+            if crate::clipboard::copy(&text).is_ok() {
+                self.delete_selection();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Paste from clipboard
+    fn paste(&mut self) -> bool {
+        if let Ok(text) = crate::clipboard::paste() {
+            // Delete selection first if any
+            self.delete_selection();
+            self.input.insert_str(self.cursor, &text);
+            self.cursor += text.len();
+            return true;
+        }
+        false
     }
 
     /// Move cursor up or down by lines
@@ -433,30 +510,70 @@ impl super::Panel for ChatPanel {
         "Chat"
     }
 
-    fn handle_input(&mut self, event: &Event, _state: &mut AppState) -> Result<bool> {
+    fn handle_input(&mut self, event: &Event, state: &mut AppState) -> Result<bool> {
         match event {
             Event::Key(key) => {
+                let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+                // Clipboard operations
+                match (key.code, key.modifiers) {
+                    // Ctrl+C: Copy selection
+                    (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
+                        if self.copy_selection() {
+                            state.info("Copied to clipboard".to_string());
+                        }
+                        return Ok(true);
+                    }
+                    // Ctrl+X: Cut selection
+                    (KeyCode::Char('x'), m) if m.contains(KeyModifiers::CONTROL) => {
+                        if self.cut_selection() {
+                            state.info("Cut to clipboard".to_string());
+                        }
+                        return Ok(true);
+                    }
+                    // Ctrl+V: Paste
+                    (KeyCode::Char('v'), m) if m.contains(KeyModifiers::CONTROL) => {
+                        self.paste();
+                        return Ok(true);
+                    }
+                    _ => {}
+                }
+
                 match key.code {
                     KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        // Delete selection if typing over it
+                        if self.selection_anchor.is_some() {
+                            self.delete_selection();
+                        }
                         self.insert_char(c);
                         Ok(true)
                     }
                     KeyCode::Backspace => {
-                        self.backspace();
+                        // Delete selection if active, otherwise normal backspace
+                        if self.selection_anchor.is_some() {
+                            self.delete_selection();
+                        } else {
+                            self.backspace();
+                        }
                         Ok(true)
                     }
                     // Shift+Enter or Alt+Enter: insert newline
                     KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT)
                         || key.modifiers.contains(KeyModifiers::ALT) => {
+                        if self.selection_anchor.is_some() {
+                            self.delete_selection();
+                        }
                         self.insert_char('\n');
                         Ok(true)
                     }
                     // Plain Enter: send message
                     KeyCode::Enter => {
+                        self.selection_anchor = None;
                         self.send_message();
                         Ok(true)
                     }
                     KeyCode::Left => {
+                        self.handle_selection(shift);
                         if self.cursor > 0 {
                             self.cursor -= 1;
                             while self.cursor > 0 && !self.input.is_char_boundary(self.cursor) {
@@ -466,6 +583,7 @@ impl super::Panel for ChatPanel {
                         Ok(true)
                     }
                     KeyCode::Right => {
+                        self.handle_selection(shift);
                         if self.cursor < self.input.len() {
                             self.cursor += 1;
                             while self.cursor < self.input.len() && !self.input.is_char_boundary(self.cursor) {
@@ -475,17 +593,17 @@ impl super::Panel for ChatPanel {
                         Ok(true)
                     }
                     KeyCode::Up => {
-                        // Move cursor up a line
+                        self.handle_selection(shift);
                         self.move_cursor_vertically(-1);
                         Ok(true)
                     }
                     KeyCode::Down => {
-                        // Move cursor down a line
+                        self.handle_selection(shift);
                         self.move_cursor_vertically(1);
                         Ok(true)
                     }
                     KeyCode::Home => {
-                        // Move to start of current line
+                        self.handle_selection(shift);
                         self.cursor = self.input[..self.cursor]
                             .rfind('\n')
                             .map(|p| p + 1)
@@ -493,12 +611,17 @@ impl super::Panel for ChatPanel {
                         Ok(true)
                     }
                     KeyCode::End => {
-                        // Move to end of current line
+                        self.handle_selection(shift);
                         self.cursor = self.input[self.cursor..]
                             .find('\n')
                             .map(|p| self.cursor + p)
                             .unwrap_or(self.input.len());
                         Ok(true)
+                    }
+                    KeyCode::Esc => {
+                        // Clear selection
+                        self.selection_anchor = None;
+                        Ok(false) // Let Escape propagate
                     }
                     _ => Ok(false),
                 }

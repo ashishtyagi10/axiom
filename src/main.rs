@@ -3,13 +3,13 @@
 //! Entry point with proper terminal setup and cleanup.
 
 use axiom::{
-    config::{load_config, AxiomConfig},
+    config::{config_path, load_config, save_config, AxiomConfig},
     core::Result,
     events::{Event, EventBus},
     llm::{ClaudeProvider, GeminiProvider, OllamaProvider, ProviderRegistry},
     panels::{Panel, PanelRegistry},
     state::AppState,
-    ui,
+    ui::{self, settings::SettingsAction},
     watcher::FileWatcher,
 };
 use crossterm::{
@@ -61,6 +61,9 @@ fn main() -> Result<()> {
 /// Handles the main event loop, rendering the UI and processing events
 /// until a quit signal is received.
 fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
+    // Initialize clipboard
+    axiom::clipboard::init();
+
     // Create event bus with bounded channel
     let event_bus = EventBus::new(1024);
 
@@ -76,8 +79,11 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     // Create provider registry from config
     let llm_registry = create_provider_registry(&config);
 
+    // Store config for settings modal (mutable for reloading)
+    let mut config = config;
+
     // Create panels
-    let mut panels = PanelRegistry::new(event_bus.sender(), &state.cwd, llm_registry)?;
+    let mut panels = PanelRegistry::new(event_bus.sender(), &state.cwd, llm_registry, &config)?;
 
     // Start file watcher for the project directory
     let _file_watcher = FileWatcher::new(&state.cwd, event_bus.sender())
@@ -104,7 +110,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
 
         // Process events with timeout (50ms for responsive UI)
         if let Some(event) = event_bus.recv_timeout(Duration::from_millis(50)) {
-            if handle_event(&event, &mut state, &mut panels, screen_area)? {
+            if handle_event(&event, &mut state, &mut panels, screen_area, &mut config)? {
                 break; // Quit requested
             }
 
@@ -118,7 +124,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
 
         // Drain additional events to prevent lag
         for event in event_bus.drain(50) {
-            if handle_event(&event, &mut state, &mut panels, screen_area)? {
+            if handle_event(&event, &mut state, &mut panels, screen_area, &mut config)? {
                 break;
             }
         }
@@ -150,10 +156,80 @@ fn handle_event(
     state: &mut AppState,
     panels: &mut PanelRegistry,
     screen_area: ratatui::layout::Rect,
+    config: &mut AxiomConfig,
 ) -> Result<bool> {
     match event {
         // Global key bindings (checked first)
         Event::Key(key) => {
+            // Handle settings modal
+            if state.input_mode.is_modal_open("settings") {
+                match key.code {
+                    KeyCode::Esc => {
+                        if panels.settings.editing {
+                            panels.settings.cancel_edit();
+                        } else {
+                            state.input_mode.to_normal();
+                        }
+                        return Ok(false);
+                    }
+                    KeyCode::Up => {
+                        panels.settings.up();
+                        return Ok(false);
+                    }
+                    KeyCode::Down => {
+                        panels.settings.down();
+                        return Ok(false);
+                    }
+                    KeyCode::Left => {
+                        panels.settings.left();
+                        return Ok(false);
+                    }
+                    KeyCode::Right => {
+                        panels.settings.right();
+                        return Ok(false);
+                    }
+                    KeyCode::Enter => {
+                        match panels.settings.enter() {
+                            SettingsAction::Save => {
+                                if let Some(new_config) = panels.apply_settings() {
+                                    // Save to file
+                                    let path = config_path(&state.cwd);
+                                    if let Err(e) = save_config(&new_config, &path) {
+                                        state.error(format!("Failed to save settings: {}", e));
+                                    } else {
+                                        // Reload providers with new config
+                                        reload_providers(panels, &new_config);
+                                        *config = new_config;
+                                        state.info("Settings saved");
+                                    }
+                                }
+                                state.input_mode.to_normal();
+                            }
+                            SettingsAction::Cancel => {
+                                state.input_mode.to_normal();
+                            }
+                            SettingsAction::StartEdit | SettingsAction::None => {
+                                // Already handled internally
+                            }
+                        }
+                        return Ok(false);
+                    }
+                    KeyCode::Char(c) if panels.settings.editing => {
+                        panels.settings.insert_char(c);
+                        return Ok(false);
+                    }
+                    KeyCode::Backspace if panels.settings.editing => {
+                        panels.settings.backspace();
+                        return Ok(false);
+                    }
+                    KeyCode::Delete if panels.settings.editing => {
+                        panels.settings.delete();
+                        return Ok(false);
+                    }
+                    _ => return Ok(false),
+                }
+            }
+
             // Handle model selector modal
             if state.input_mode.is_modal_open("model_selector") {
                 match key.code {
@@ -190,6 +266,13 @@ fn handle_event(
             if key.code == KeyCode::Char('m') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 panels.open_model_selector();
                 state.input_mode.open_modal("model_selector");
+                return Ok(false);
+            }
+
+            // Ctrl+,: Open settings modal
+            if key.code == KeyCode::Char(',') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                panels.open_settings(config);
+                state.input_mode.open_modal("settings");
                 return Ok(false);
             }
 
@@ -238,6 +321,54 @@ fn handle_event(
         Event::Mouse(mouse) => {
             let x = mouse.column;
             let y = mouse.row;
+
+            // Handle settings modal mouse events
+            if state.input_mode.is_modal_open("settings") {
+                match mouse.kind {
+                    event::MouseEventKind::Down(event::MouseButton::Left) => {
+                        // Check if click is inside modal
+                        if panels.settings.contains(x, y) {
+                            // Handle click on settings items
+                            match panels.settings.handle_click(x, y) {
+                                SettingsAction::Save => {
+                                    if let Some(new_config) = panels.apply_settings() {
+                                        let path = config_path(&state.cwd);
+                                        if let Err(e) = save_config(&new_config, &path) {
+                                            state.error(format!("Failed to save settings: {}", e));
+                                        } else {
+                                            reload_providers(panels, &new_config);
+                                            *config = new_config;
+                                            state.info("Settings saved");
+                                        }
+                                    }
+                                    state.input_mode.to_normal();
+                                }
+                                SettingsAction::Cancel => {
+                                    state.input_mode.to_normal();
+                                }
+                                SettingsAction::StartEdit | SettingsAction::None => {
+                                    // Row selected or edit started
+                                }
+                            }
+                        } else {
+                            // Click outside modal - close it
+                            state.input_mode.to_normal();
+                        }
+                    }
+                    event::MouseEventKind::ScrollUp => {
+                        if panels.settings.contains(x, y) {
+                            panels.settings.up();
+                        }
+                    }
+                    event::MouseEventKind::ScrollDown => {
+                        if panels.settings.contains(x, y) {
+                            panels.settings.down();
+                        }
+                    }
+                    _ => {}
+                }
+                return Ok(false);
+            }
 
             // Handle model selector modal mouse events
             if state.input_mode.is_modal_open("model_selector") {
@@ -487,6 +618,33 @@ fn create_provider_registry(config: &AxiomConfig) -> ProviderRegistry {
     }
 
     registry
+}
+
+/// Reloads LLM providers with a new configuration.
+///
+/// Recreates the provider registry and updates the chat panel's provider.
+fn reload_providers(panels: &mut PanelRegistry, config: &AxiomConfig) {
+    // Create new provider registry
+    let new_registry = create_provider_registry(config);
+
+    // Remember current model selection if possible
+    let current_provider = panels.chat.provider_id().to_string();
+
+    // Replace the registry
+    *panels.llm_registry.write() = new_registry;
+
+    // Try to set the same provider, or fall back to default
+    let registry = panels.llm_registry.read();
+    if let Some(provider) = registry.get(&current_provider) {
+        drop(registry);
+        panels.chat.set_provider(provider);
+    } else if let Some(provider) = panels.llm_registry.read().get(&config.llm.default_provider) {
+        drop(registry);
+        panels.chat.set_provider(provider);
+    } else if let Some(provider) = panels.llm_registry.read().active() {
+        drop(registry);
+        panels.chat.set_provider(provider);
+    }
 }
 
 /// Checks if a given path corresponds to a source code file.

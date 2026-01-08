@@ -7,6 +7,7 @@
 //! - AI chat with streaming support
 //! - Multi-provider LLM integration (Claude, Gemini, Ollama, OpenAI)
 
+pub mod clipboard;
 pub mod config;
 pub mod core;
 pub mod events;

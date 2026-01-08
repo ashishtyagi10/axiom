@@ -193,6 +193,18 @@ impl super::Panel for TerminalPanel {
     fn handle_input(&mut self, event: &Event, _state: &mut AppState) -> Result<bool> {
         match event {
             Event::Key(key) => {
+                // Ctrl+Shift+V: Paste from clipboard to terminal
+                if matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V'))
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.modifiers.contains(KeyModifiers::SHIFT)
+                {
+                    if let Ok(text) = crate::clipboard::paste() {
+                        // Write clipboard content to PTY as if typed
+                        self.pty.write(text.as_bytes())?;
+                    }
+                    return Ok(true);
+                }
+
                 self.write_key(key.code, key.modifiers)?;
                 Ok(true)
             }

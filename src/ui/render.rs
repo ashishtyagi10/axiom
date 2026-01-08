@@ -32,6 +32,11 @@ pub fn render(frame: &mut Frame, state: &AppState, panels: &mut PanelRegistry) {
     if state.input_mode.is_modal_open("model_selector") {
         panels.model_selector.render(frame, area);
     }
+
+    // Render settings modal if open
+    if state.input_mode.is_modal_open("settings") {
+        panels.settings.render(frame, area);
+    }
 }
 
 /// Render the status bar, returns the model badge area for click detection
@@ -68,7 +73,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AppState, panels: &P
         Span::styled(status_text, Style::default().fg(Color::Gray)),
         Span::raw("  "),
         Span::styled(
-            " Ctrl+M: Model  q: Quit  Tab: Switch ",
+            " Ctrl+,: Settings  Ctrl+M: Model  q: Quit  Tab: Switch ",
             Style::default().fg(Color::DarkGray),
         ),
     ];
