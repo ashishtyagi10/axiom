@@ -99,6 +99,12 @@ impl Conductor {
             status: AgentStatus::Running,
         });
 
+        // Output user's question first (chat interface style)
+        let _ = self.event_tx.send(Event::AgentOutput {
+            id: agent_id,
+            chunk: format!("\n**You:** {}\n\n", task),
+        });
+
         let event_tx = self.event_tx.clone();
         let llm_registry = self.llm_registry.clone();
         let history = self.history.clone();
@@ -177,6 +183,12 @@ fn execute_conductor(
 
     // Send to LLM
     provider.send_message(messages, llm_tx);
+
+    // Output assistant prefix (chat interface style)
+    let _ = event_tx.send(Event::AgentOutput {
+        id: agent_id,
+        chunk: "**Assistant:** ".to_string(),
+    });
 
     // Stream responses to agent output
     let mut full_response = String::new();

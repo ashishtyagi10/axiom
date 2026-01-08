@@ -554,14 +554,11 @@ fn handle_event(
             // Wake an idle agent (used for persistent Conductor)
             let mut registry = panels.agent_registry.write();
 
-            // Remove old child agents from previous interaction
+            // Remove old child agents from previous interaction (keeps agent list clean)
             registry.remove_children(*id);
 
             if let Some(agent) = registry.get_mut(*id) {
-                // Clear output for new interaction - history is kept in Conductor.history for LLM context
-                agent.output.clear();
-                agent.token_count = 0;
-                agent.line_count = 0;
+                // Don't clear output - keep conversation history visible (chat interface style)
                 agent.status = axiom::agents::AgentStatus::Running;
             }
             drop(registry);
