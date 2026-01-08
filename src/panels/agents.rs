@@ -289,7 +289,17 @@ impl Panel for AgentsPanel {
             ids.push(agent.id);
 
             let is_selected = idx == self.selected_index;
-            let elapsed_ms = agent.elapsed().as_millis();
+
+            // For running agents, use live elapsed time; for completed, use fixed run duration
+            let (elapsed_ms, display_secs) = if agent.status.is_terminal() {
+                // Completed/Error/Cancelled - show fixed duration
+                let run_dur = agent.run_duration().unwrap_or_else(|| agent.elapsed());
+                (run_dur.as_millis(), run_dur.as_secs())
+            } else {
+                // Pending/Running/Idle - show live elapsed time
+                let elapsed = agent.elapsed();
+                (elapsed.as_millis(), elapsed.as_secs())
+            };
 
             // Spinner for running agents
             let status_indicator = if agent.status.is_running() {
@@ -327,7 +337,7 @@ impl Panel for AgentsPanel {
             ]);
 
             // Line 2: Stats - Time, Tokens, Lines
-            let duration = Self::format_duration(agent.elapsed().as_secs());
+            let duration = Self::format_duration(display_secs);
             let tokens = Self::format_tokens_compact(agent.token_count);
             let lines = if agent.line_count > 0 {
                 format!("{}L", agent.line_count)
