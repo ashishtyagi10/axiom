@@ -307,6 +307,24 @@ impl AgentRegistry {
             }
         }
     }
+
+    /// Remove all children of a parent agent (for new interaction cleanup)
+    pub fn remove_children(&mut self, parent_id: AgentId) {
+        let to_remove: Vec<AgentId> = self
+            .agents
+            .iter()
+            .filter(|(_, a)| a.parent_id == Some(parent_id))
+            .map(|(id, _)| *id)
+            .collect();
+
+        for id in to_remove {
+            self.agents.remove(&id);
+            self.order.retain(|&i| i != id);
+            if self.selected == Some(id) {
+                self.selected = Some(parent_id); // Select parent instead
+            }
+        }
+    }
 }
 
 impl Default for AgentRegistry {
