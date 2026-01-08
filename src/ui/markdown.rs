@@ -241,71 +241,54 @@ impl MarkdownRenderer {
         }
     }
 
-    /// Render a user message as a right-aligned box
+    /// Render a user message as right-aligned with diamond header
     fn render_user_message_box(&mut self, text: &str) {
-        let text_len = text.lines().map(|l| l.len()).max().unwrap_or(0);
-        let box_width: usize = 50.min(text_len + 4).max(20);
-        let inner_width = box_width - 4; // Account for "│ " and " │"
-
-        // Styles
+        // Styles - blue theme for user (matching Axiom style)
+        let header_style = Style::default()
+            .fg(Color::Rgb(100, 160, 220))
+            .add_modifier(Modifier::BOLD);
         let border_style = Style::default()
-            .fg(Color::Rgb(100, 140, 180))
-            .bg(Color::Rgb(35, 45, 55));
+            .fg(Color::Rgb(70, 90, 110));
         let text_style = Style::default()
-            .fg(Color::Rgb(220, 230, 240))
-            .bg(Color::Rgb(35, 45, 55));
+            .fg(Color::Rgb(200, 210, 220));
 
-        // Calculate right-alignment padding (assume ~80 char width)
+        // Calculate content width for right alignment
+        let max_content_width = text.lines().map(|l| l.len()).max().unwrap_or(0);
+        let header_width = 6; // "◆ You"
+        let content_with_border = max_content_width + 2; // "│ " prefix
+        let block_width = header_width.max(content_with_border);
+
+        // Right-align padding (assume ~78 char display width)
         let display_width: usize = 78;
-        let padding = display_width.saturating_sub(box_width);
-        let pad_str = " ".repeat(padding);
+        let header_padding = display_width.saturating_sub(header_width);
+        let content_padding = display_width.saturating_sub(content_with_border);
 
-        // Top border
+        // Header with You label (right-aligned)
         self.lines.push(Line::from(vec![
-            Span::raw(pad_str.clone()),
-            Span::styled("┌", border_style),
-            Span::styled("─".repeat(box_width - 2), border_style),
-            Span::styled("┐", border_style),
+            Span::raw(" ".repeat(header_padding)),
+            Span::styled("◆ ", header_style),
+            Span::styled("You", header_style),
         ]));
 
-        // Content lines - wrap text if needed
+        // Content lines (right-aligned with left border)
         for line in text.lines() {
-            // Simple word wrapping
-            let mut remaining = line;
-            while !remaining.is_empty() {
-                let chunk_len = remaining.len().min(inner_width);
-                let chunk = &remaining[..chunk_len];
-                let text_padding = inner_width.saturating_sub(chunk.len());
-
-                self.lines.push(Line::from(vec![
-                    Span::raw(pad_str.clone()),
-                    Span::styled("│ ", border_style),
-                    Span::styled(chunk.to_string(), text_style),
-                    Span::styled(" ".repeat(text_padding), text_style),
-                    Span::styled(" │", border_style),
-                ]));
-
-                remaining = &remaining[chunk_len..];
-            }
-        }
-
-        // If text was empty, add one empty line
-        if text.is_empty() || text.lines().count() == 0 {
+            let line_padding = display_width.saturating_sub(line.len() + 2);
             self.lines.push(Line::from(vec![
-                Span::raw(pad_str.clone()),
+                Span::raw(" ".repeat(line_padding)),
                 Span::styled("│ ", border_style),
-                Span::styled(" ".repeat(inner_width), text_style),
-                Span::styled(" │", border_style),
+                Span::styled(line.to_string(), text_style),
             ]));
         }
 
-        // Bottom border
-        self.lines.push(Line::from(vec![
-            Span::raw(pad_str),
-            Span::styled("└", border_style),
-            Span::styled("─".repeat(box_width - 2), border_style),
-            Span::styled("┘", border_style),
-        ]));
+        // If text was empty, add placeholder
+        if text.is_empty() || text.lines().count() == 0 {
+            let line_padding = display_width.saturating_sub(5);
+            self.lines.push(Line::from(vec![
+                Span::raw(" ".repeat(line_padding)),
+                Span::styled("│ ", border_style),
+                Span::styled("...", text_style),
+            ]));
+        }
 
         // Add empty line after
         self.lines.push(Line::from(""));
