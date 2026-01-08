@@ -154,32 +154,56 @@ impl MarkdownRenderer {
     }
 
     fn render(mut self, text: &str) -> Vec<Line<'static>> {
-        // Process text in segments, handling >>>user...<<< blocks specially
+        // Process text in segments, handling >>>user...<<< and >>>axiom...<<< blocks
         let mut remaining = text;
 
         while !remaining.is_empty() {
-            // Look for user message block
-            if let Some(start) = remaining.find(">>>user\n") {
-                // Render text before the block
-                if start > 0 {
-                    self.render_markdown_segment(&remaining[..start]);
-                }
+            // Look for the nearest special block
+            let user_pos = remaining.find(">>>user\n");
+            let axiom_pos = remaining.find(">>>axiom\n");
 
-                // Find the end of the user block
-                let block_start = start + 8; // ">>>user\n".len()
-                if let Some(end) = remaining[block_start..].find("\n<<<") {
-                    let user_text = &remaining[block_start..block_start + end];
-                    self.render_user_message_box(user_text);
-                    remaining = &remaining[block_start + end + 4..]; // skip "\n<<<"
-                } else {
-                    // No closing tag, render rest as markdown
+            match (user_pos, axiom_pos) {
+                (Some(u), Some(a)) if u < a => {
+                    // User block comes first
+                    if u > 0 {
+                        self.render_markdown_segment(&remaining[..u]);
+                    }
+                    remaining = &remaining[u..];
+                    remaining = self.process_user_block(remaining);
+                }
+                (Some(u), Some(a)) if a < u => {
+                    // Axiom block comes first
+                    if a > 0 {
+                        self.render_markdown_segment(&remaining[..a]);
+                    }
+                    remaining = &remaining[a..];
+                    remaining = self.process_axiom_block(remaining);
+                }
+                (Some(u), None) => {
+                    // Only user block
+                    if u > 0 {
+                        self.render_markdown_segment(&remaining[..u]);
+                    }
+                    remaining = &remaining[u..];
+                    remaining = self.process_user_block(remaining);
+                }
+                (None, Some(a)) => {
+                    // Only axiom block
+                    if a > 0 {
+                        self.render_markdown_segment(&remaining[..a]);
+                    }
+                    remaining = &remaining[a..];
+                    remaining = self.process_axiom_block(remaining);
+                }
+                (None, None) => {
+                    // No special blocks, render as markdown
                     self.render_markdown_segment(remaining);
                     break;
                 }
-            } else {
-                // No more user blocks, render rest as markdown
-                self.render_markdown_segment(remaining);
-                break;
+                _ => {
+                    self.render_markdown_segment(remaining);
+                    break;
+                }
             }
         }
 
@@ -189,6 +213,32 @@ impl MarkdownRenderer {
         }
 
         self.lines
+    }
+
+    fn process_user_block<'a>(&mut self, text: &'a str) -> &'a str {
+        let block_start = 8; // ">>>user\n".len()
+        if let Some(end) = text[block_start..].find("\n<<<") {
+            let user_text = &text[block_start..block_start + end];
+            self.render_user_message_box(user_text);
+            &text[block_start + end + 4..] // skip "\n<<<"
+        } else {
+            // No closing tag, render rest as markdown
+            self.render_markdown_segment(text);
+            ""
+        }
+    }
+
+    fn process_axiom_block<'a>(&mut self, text: &'a str) -> &'a str {
+        let block_start = 9; // ">>>axiom\n".len()
+        if let Some(end) = text[block_start..].find("\n<<<") {
+            let axiom_text = &text[block_start..block_start + end];
+            self.render_axiom_message_box(axiom_text);
+            &text[block_start + end + 4..] // skip "\n<<<"
+        } else {
+            // No closing tag yet (streaming), render what we have
+            self.render_axiom_message_box(&text[block_start..]);
+            ""
+        }
     }
 
     /// Render a user message as a right-aligned box
@@ -259,6 +309,47 @@ impl MarkdownRenderer {
 
         // Add empty line after
         self.lines.push(Line::from(""));
+    }
+
+    /// Render an Axiom response as a left-aligned box
+    fn render_axiom_message_box(&mut self, text: &str) {
+        // Styles - teal/cyan theme for Axiom
+        let header_style = Style::default()
+            .fg(Color::Rgb(80, 200, 180))
+            .add_modifier(Modifier::BOLD);
+        let border_style = Style::default()
+            .fg(Color::Rgb(60, 80, 70));
+        let text_style = Style::default()
+            .fg(Color::Rgb(220, 220, 220));
+
+        // Header with Axiom label
+        self.lines.push(Line::from(vec![
+            Span::styled("◆ ", header_style),
+            Span::styled("Axiom", header_style),
+        ]));
+
+        // Render content as markdown (supports code blocks, lists, etc.)
+        if !text.is_empty() {
+            // Add left border indicator for each line
+            let rendered = MarkdownRenderer::new(text_style).render_markdown_only(text);
+            for line in rendered {
+                let mut new_spans = vec![Span::styled("│ ", border_style)];
+                new_spans.extend(line.spans);
+                self.lines.push(Line::from(new_spans));
+            }
+        }
+
+        // Add empty line after
+        self.lines.push(Line::from(""));
+    }
+
+    /// Render markdown without special block processing (for nested rendering)
+    fn render_markdown_only(mut self, text: &str) -> Vec<Line<'static>> {
+        self.render_markdown_segment(text);
+        if !self.current_line.is_empty() {
+            self.flush_line();
+        }
+        self.lines
     }
 
     /// Render a segment of markdown

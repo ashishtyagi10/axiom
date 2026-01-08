@@ -184,10 +184,10 @@ fn execute_conductor(
     // Send to LLM
     provider.send_message(messages, llm_tx);
 
-    // Output Axiom prefix (chat interface style)
+    // Start Axiom response box (chat interface style)
     let _ = event_tx.send(Event::AgentOutput {
         id: agent_id,
-        chunk: "**Axiom:** ".to_string(),
+        chunk: ">>>axiom\n".to_string(),
     });
 
     // Stream responses to agent output
@@ -202,6 +202,11 @@ fn execute_conductor(
                 });
             }
             Ok(Event::LlmDone) => {
+                // Close Axiom response box
+                let _ = event_tx.send(Event::AgentOutput {
+                    id: agent_id,
+                    chunk: "\n<<<\n".to_string(),
+                });
                 // Parse response for agent spawn commands (pass conductor_id as parent)
                 parse_and_spawn_agents(&full_response, &event_tx, agent_id);
                 // Set to Idle so conductor can be reused for next input
@@ -212,9 +217,10 @@ fn execute_conductor(
                 break;
             }
             Ok(Event::LlmError(e)) => {
+                // Close box and show error
                 let _ = event_tx.send(Event::AgentOutput {
                     id: agent_id,
-                    chunk: format!("\nError: {}", e),
+                    chunk: format!("\nError: {}\n<<<\n", e),
                 });
                 // Set to Idle so conductor can be reused
                 let _ = event_tx.send(Event::AgentUpdate {
@@ -224,6 +230,11 @@ fn execute_conductor(
                 break;
             }
             Err(_) => {
+                // Close box on error
+                let _ = event_tx.send(Event::AgentOutput {
+                    id: agent_id,
+                    chunk: "\n<<<\n".to_string(),
+                });
                 // Set to Idle so conductor can be reused
                 let _ = event_tx.send(Event::AgentUpdate {
                     id: agent_id,
