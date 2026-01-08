@@ -87,35 +87,70 @@ impl MarkdownRenderer {
         let content = std::mem::take(&mut self.code_block_content);
         let lang = self.code_block_lang.take();
 
-        // Code block header
-        let header_style = Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::DIM);
+        // Calculate box width based on content
+        let content_lines: Vec<&str> = content.lines().collect();
+        let max_line_len = content_lines.iter().map(|l| l.len()).max().unwrap_or(0);
+        let inner_width = max_line_len.max(40).min(76); // Min 40, max 76 chars for code
+
+        // Total width between corners = inner_width + 2 (for " " padding on each side)
+        let total_inner = inner_width + 2;
+
+        // Style definitions
+        let border_style = Style::default()
+            .fg(Color::Rgb(80, 80, 90))
+            .bg(Color::Rgb(30, 34, 42));
+        let header_bg_style = Style::default()
+            .fg(Color::Rgb(180, 180, 80))
+            .bg(Color::Rgb(30, 34, 42))
+            .add_modifier(Modifier::BOLD);
+        let code_style = Style::default()
+            .fg(Color::Rgb(212, 212, 212))
+            .bg(Color::Rgb(30, 34, 42));
 
         let lang_display = lang.as_deref().unwrap_or("code");
+        let lang_with_spaces = format!(" {} ", lang_display);
+        let lang_len = lang_with_spaces.len();
+
+        // Build header: ┌─── python ────────────────────────────────┐
+        // Total dashes = total_inner - lang_len
+        let total_dashes = total_inner.saturating_sub(lang_len);
+        let left_dashes = 3.min(total_dashes);
+        let right_dashes = total_dashes.saturating_sub(left_dashes);
+
         self.lines.push(Line::from(vec![
-            Span::styled("┌─", header_style),
-            Span::styled(format!(" {} ", lang_display), Style::default().fg(Color::Yellow)),
-            Span::styled("─".repeat(20), header_style),
+            Span::styled("┌", border_style),
+            Span::styled("─".repeat(left_dashes), border_style),
+            Span::styled(lang_with_spaces, header_bg_style),
+            Span::styled("─".repeat(right_dashes), border_style),
+            Span::styled("┐", border_style),
         ]));
 
-        // Code content with background
-        let code_style = Style::default()
-            .fg(Color::Rgb(220, 220, 220))
-            .bg(Color::Rgb(40, 44, 52));
-
-        for line in content.lines() {
+        // Code content - each line padded to fill the box
+        for line in content_lines.iter() {
+            let padding = inner_width.saturating_sub(line.len());
             self.lines.push(Line::from(vec![
-                Span::styled("│ ", header_style),
+                Span::styled("│ ", border_style),
                 Span::styled(line.to_string(), code_style),
+                Span::styled(" ".repeat(padding), code_style),
+                Span::styled(" │", border_style),
             ]));
         }
 
-        // Code block footer
-        self.lines.push(Line::from(Span::styled(
-            "└".to_string() + &"─".repeat(24),
-            header_style,
-        )));
+        // If content was empty, add one empty line
+        if content_lines.is_empty() {
+            self.lines.push(Line::from(vec![
+                Span::styled("│ ", border_style),
+                Span::styled(" ".repeat(inner_width), code_style),
+                Span::styled(" │", border_style),
+            ]));
+        }
+
+        // Footer: └────────────────────────────────────────────────┘
+        self.lines.push(Line::from(vec![
+            Span::styled("└", border_style),
+            Span::styled("─".repeat(total_inner), border_style),
+            Span::styled("┘", border_style),
+        ]));
     }
 
     fn render(mut self, text: &str) -> Vec<Line<'static>> {

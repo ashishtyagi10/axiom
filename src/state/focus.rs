@@ -7,9 +7,26 @@
 pub struct PanelId(pub usize);
 
 impl PanelId {
+    /// File tree panel (left sidebar)
     pub const FILE_TREE: PanelId = PanelId(0);
+
+    /// Output panel (center-top, shows file content or agent output)
+    pub const OUTPUT: PanelId = PanelId(1);
+
+    /// Input panel (center-bottom, unified command input)
+    pub const INPUT: PanelId = PanelId(2);
+
+    /// Agents panel (right sidebar, shows spawned agents)
+    pub const AGENTS: PanelId = PanelId(3);
+
+    // Legacy aliases for compatibility during transition
+    #[deprecated(note = "Use OUTPUT instead")]
     pub const EDITOR: PanelId = PanelId(1);
+
+    #[deprecated(note = "Use INPUT instead")]
     pub const TERMINAL: PanelId = PanelId(2);
+
+    #[deprecated(note = "Use AGENTS instead")]
     pub const CHAT: PanelId = PanelId(3);
 }
 
@@ -38,12 +55,13 @@ impl FocusState {
     /// Create new focus state with default panel ring
     pub fn new() -> Self {
         Self {
-            current: PanelId::EDITOR,
+            // Start at INPUT for immediate typing
+            current: PanelId::INPUT,
             ring: vec![
                 PanelId::FILE_TREE,
-                PanelId::EDITOR,
-                PanelId::TERMINAL,
-                PanelId::CHAT,
+                PanelId::OUTPUT,
+                PanelId::INPUT,
+                PanelId::AGENTS,
             ],
             history: Vec::new(),
             max_history: 10,
@@ -83,7 +101,11 @@ impl FocusState {
     /// Cycle to previous panel in ring
     pub fn prev(&mut self) {
         if let Some(idx) = self.ring.iter().position(|&id| id == self.current) {
-            let prev_idx = if idx == 0 { self.ring.len() - 1 } else { idx - 1 };
+            let prev_idx = if idx == 0 {
+                self.ring.len() - 1
+            } else {
+                idx - 1
+            };
             self.focus(self.ring[prev_idx]);
         }
     }
@@ -103,17 +125,17 @@ mod tests {
     #[test]
     fn test_default_focus() {
         let focus = FocusState::new();
-        assert_eq!(focus.current(), PanelId::EDITOR);
+        assert_eq!(focus.current(), PanelId::INPUT);
     }
 
     #[test]
     fn test_focus_change() {
         let mut focus = FocusState::new();
 
-        focus.focus(PanelId::TERMINAL);
-        assert_eq!(focus.current(), PanelId::TERMINAL);
-        assert!(focus.is_focused(PanelId::TERMINAL));
-        assert!(!focus.is_focused(PanelId::EDITOR));
+        focus.focus(PanelId::OUTPUT);
+        assert_eq!(focus.current(), PanelId::OUTPUT);
+        assert!(focus.is_focused(PanelId::OUTPUT));
+        assert!(!focus.is_focused(PanelId::INPUT));
     }
 
     #[test]
@@ -122,20 +144,20 @@ mod tests {
         focus.focus(PanelId::FILE_TREE);
 
         focus.next();
-        assert_eq!(focus.current(), PanelId::EDITOR);
+        assert_eq!(focus.current(), PanelId::OUTPUT);
 
         focus.next();
-        assert_eq!(focus.current(), PanelId::TERMINAL);
+        assert_eq!(focus.current(), PanelId::INPUT);
     }
 
     #[test]
     fn test_back_navigation() {
         let mut focus = FocusState::new();
 
-        focus.focus(PanelId::TERMINAL);
-        focus.focus(PanelId::CHAT);
+        focus.focus(PanelId::OUTPUT);
+        focus.focus(PanelId::AGENTS);
 
         focus.back();
-        assert_eq!(focus.current(), PanelId::TERMINAL);
+        assert_eq!(focus.current(), PanelId::OUTPUT);
     }
 }

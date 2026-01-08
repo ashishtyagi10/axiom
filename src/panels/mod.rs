@@ -1,27 +1,43 @@
 //! Panel system with trait-based composition
 //!
 //! Each panel implements the Panel trait for consistent behavior.
+//!
+//! New agentic layout:
+//! - FileTree (left): File navigation
+//! - Output (center-top): File content or agent output
+//! - Input (center-bottom): Unified command input
+//! - Agents (right): Spawned agents list
 
+mod agents;
 mod editor;
 mod file_tree;
-mod terminal;
-mod chat;
+mod input;
+mod output;
 
+// Legacy panels (kept for potential reuse of components)
+mod chat;
+mod terminal;
+
+pub use agents::AgentsPanel;
 pub use editor::EditorPanel;
 pub use file_tree::FileTreePanel;
-pub use terminal::TerminalPanel;
-pub use chat::ChatPanel;
+pub use input::InputPanel;
+pub use output::OutputPanel;
 
+// Re-export editor components for file viewer
+pub use editor::{DiffTracker, Highlighter, Position, Selection};
+
+use crate::agents::AgentRegistry;
 use crate::config::AxiomConfig;
 use crate::core::Result;
 use crate::events::Event;
 use crate::llm::ProviderRegistry;
-use crate::state::{AppState, PanelId};
+use crate::state::{AppState, OutputContext, PanelId};
 use crate::ui::{ModelSelector, SettingsModal};
+use parking_lot::RwLock;
 use ratatui::layout::Rect;
 use ratatui::Frame;
 use std::sync::Arc;
-use parking_lot::RwLock;
 
 /// Panel trait - defines the interface for all panels
 ///
@@ -40,7 +56,7 @@ pub trait Panel: Send {
     fn handle_input(&mut self, event: &Event, state: &mut AppState) -> Result<bool>;
 
     /// Render the panel to the frame
-    fn render(&self, frame: &mut Frame, area: Rect, focused: bool);
+    fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool);
 
     /// Called when this panel gains focus
     fn on_focus(&mut self) {}
@@ -49,8 +65,6 @@ pub trait Panel: Send {
     fn on_blur(&mut self) {}
 
     /// Called when the panel area is resized
-    ///
-    /// For terminal panel, this triggers PTY resize.
     fn on_resize(&mut self, _cols: u16, _rows: u16) {}
 
     /// Check if the panel can be closed
@@ -62,17 +76,32 @@ pub trait Panel: Send {
     fn destroy(&mut self) {}
 }
 
-/// Container for all panels
+/// Container for all panels in the new agentic layout
 pub struct PanelRegistry {
+    /// Left panel: file tree navigation
     pub file_tree: FileTreePanel,
-    pub editor: EditorPanel,
-    pub terminal: TerminalPanel,
-    pub chat: ChatPanel,
+
+    /// Center-top: output area (file content or agent output)
+    pub output: OutputPanel,
+
+    /// Center-bottom: unified input
+    pub input: InputPanel,
+
+    /// Right panel: agents list
+    pub agents: AgentsPanel,
+
+    /// Agent registry (shared with output and agents panels)
+    pub agent_registry: Arc<RwLock<AgentRegistry>>,
+
+    /// Model selector modal
     pub model_selector: ModelSelector,
+
     /// Settings modal
     pub settings: SettingsModal,
+
     /// Cached model badge area for click detection
     pub model_badge_area: Option<Rect>,
+
     /// LLM provider registry for multi-provider support
     pub llm_registry: Arc<RwLock<ProviderRegistry>>,
 }
@@ -85,24 +114,35 @@ impl PanelRegistry {
         llm_registry: ProviderRegistry,
         config: &AxiomConfig,
     ) -> Result<Self> {
-        let registry = Arc::new(RwLock::new(llm_registry));
-
-        // Get the active provider for the chat panel
-        let provider = registry
-            .read()
-            .active()
-            .expect("No active LLM provider configured");
+        let llm_registry = Arc::new(RwLock::new(llm_registry));
+        let agent_registry = Arc::new(RwLock::new(AgentRegistry::new()));
 
         Ok(Self {
             file_tree: FileTreePanel::new(cwd),
-            editor: EditorPanel::new(),
-            terminal: TerminalPanel::new(event_tx.clone(), cwd)?,
-            chat: ChatPanel::new(event_tx, provider),
+            output: OutputPanel::new(agent_registry.clone()),
+            input: InputPanel::new(event_tx.clone()),
+            agents: AgentsPanel::new(agent_registry.clone(), event_tx),
+            agent_registry,
             model_selector: ModelSelector::new(),
             settings: SettingsModal::new(config),
             model_badge_area: None,
-            llm_registry: registry,
+            llm_registry,
         })
+    }
+
+    /// Get the agent registry
+    pub fn agent_registry(&self) -> Arc<RwLock<AgentRegistry>> {
+        self.agent_registry.clone()
+    }
+
+    /// Set the output context (what's displayed in output panel)
+    pub fn set_output_context(&mut self, context: OutputContext) {
+        self.output.set_context(context);
+    }
+
+    /// Get the current output context
+    pub fn output_context(&self) -> &OutputContext {
+        self.output.context()
     }
 
     /// Open the settings modal with current configuration
@@ -128,9 +168,6 @@ impl PanelRegistry {
 
     /// Open the model selector modal
     pub fn open_model_selector(&mut self) {
-        let current = self.chat.current_model();
-        let provider_id = self.chat.provider_id();
-
         // Get all models from all providers
         let registry = self.llm_registry.read();
         let mut all_models: Vec<String> = Vec::new();
@@ -140,65 +177,37 @@ impl PanelRegistry {
             if let Some(provider) = registry.get(&info.id) {
                 if let Ok(models) = provider.list_models() {
                     for model in models {
-                        // Format: "provider:model" for display
                         all_models.push(format!("{}:{}", info.id, model));
                     }
                 }
             }
         }
 
-        let current_full = format!("{}:{}", provider_id, current);
-        self.model_selector.set_models(all_models, &current_full);
+        // Get current model (from first provider for now)
+        let current = registry
+            .provider_info()
+            .first()
+            .map(|info| format!("{}:default", info.id))
+            .unwrap_or_default();
+
+        self.model_selector.set_models(all_models, &current);
     }
 
     /// Apply the selected model
     pub fn apply_selected_model(&mut self) -> Option<String> {
-        if let Some(selection) = self.model_selector.selected_model() {
-            let selection = selection.to_string();
-
-            // Parse "provider:model" format
-            if let Some(colon_idx) = selection.find(':') {
-                let provider_id = &selection[..colon_idx];
-                let model = &selection[colon_idx + 1..];
-
-                // Switch provider if different
-                if provider_id != self.chat.provider_id() {
-                    if let Some(provider) = self.llm_registry.read().get(provider_id) {
-                        self.chat.set_provider(provider);
-                    }
-                }
-
-                // Set the model
-                self.chat.set_model(model);
-                return Some(selection);
-            }
-
-            // Fallback: just set model on current provider
-            self.chat.set_model(&selection);
-            Some(selection)
-        } else {
-            None
-        }
-    }
-
-    /// Switch to a specific provider
-    pub fn switch_provider(&mut self, provider_id: &str) -> bool {
-        if let Some(provider) = self.llm_registry.read().get(provider_id) {
-            self.chat.set_provider(provider);
-            true
-        } else {
-            false
-        }
+        self.model_selector
+            .selected_model()
+            .map(|s| s.to_string())
     }
 
     /// Get panel by ID
     pub fn get(&self, id: PanelId) -> &dyn Panel {
         match id {
             PanelId::FILE_TREE => &self.file_tree,
-            PanelId::EDITOR => &self.editor,
-            PanelId::TERMINAL => &self.terminal,
-            PanelId::CHAT => &self.chat,
-            _ => &self.editor, // fallback
+            PanelId::OUTPUT => &self.output,
+            PanelId::INPUT => &self.input,
+            PanelId::AGENTS => &self.agents,
+            _ => &self.output, // fallback
         }
     }
 
@@ -206,32 +215,34 @@ impl PanelRegistry {
     pub fn get_mut(&mut self, id: PanelId) -> &mut dyn Panel {
         match id {
             PanelId::FILE_TREE => &mut self.file_tree,
-            PanelId::EDITOR => &mut self.editor,
-            PanelId::TERMINAL => &mut self.terminal,
-            PanelId::CHAT => &mut self.chat,
-            _ => &mut self.editor, // fallback
+            PanelId::OUTPUT => &mut self.output,
+            PanelId::INPUT => &mut self.input,
+            PanelId::AGENTS => &mut self.agents,
+            _ => &mut self.output, // fallback
         }
-    }
-
-    /// Notify all panels of resize
-    pub fn notify_resize(&mut self, terminal_area: Rect) {
-        // Terminal panel handles border calculations internally
-        self.terminal.on_resize(terminal_area.width, terminal_area.height);
     }
 
     /// Notify all panels of resize with full layout
     pub fn notify_resize_all(&mut self, layout: &crate::ui::AppLayout) {
-        self.file_tree.on_resize(layout.file_tree.width, layout.file_tree.height);
-        self.editor.on_resize(layout.editor.width, layout.editor.height);
-        // Terminal panel handles border calculations internally
-        self.terminal.on_resize(layout.terminal.width, layout.terminal.height);
-        self.chat.on_resize(layout.chat.width, layout.chat.height);
+        self.file_tree
+            .on_resize(layout.file_tree.width, layout.file_tree.height);
+        self.output
+            .on_resize(layout.output.width, layout.output.height);
+        self.input
+            .on_resize(layout.input.width, layout.input.height);
+        self.agents
+            .on_resize(layout.agents.width, layout.agents.height);
     }
 
     /// Handle focus change - notify panels and update layout
     pub fn handle_focus_change(&mut self, new_focus: PanelId, area: Rect) {
         // Notify panels of focus/blur
-        for id in [PanelId::FILE_TREE, PanelId::EDITOR, PanelId::TERMINAL, PanelId::CHAT] {
+        for id in [
+            PanelId::FILE_TREE,
+            PanelId::OUTPUT,
+            PanelId::INPUT,
+            PanelId::AGENTS,
+        ] {
             if id == new_focus {
                 self.get_mut(id).on_focus();
             } else {

@@ -3,12 +3,13 @@
 //! Entry point with proper terminal setup and cleanup.
 
 use axiom::{
+    agents::{Conductor, Executor},
     config::{config_path, load_config, save_config, AxiomConfig},
     core::Result,
     events::{Event, EventBus},
     llm::{ClaudeProvider, GeminiProvider, OllamaProvider, ProviderRegistry},
     panels::{Panel, PanelRegistry},
-    state::AppState,
+    state::{AppState, OutputContext},
     ui::{self, settings::SettingsAction},
     watcher::FileWatcher,
 };
@@ -85,6 +86,14 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     // Create panels
     let mut panels = PanelRegistry::new(event_bus.sender(), &state.cwd, llm_registry, &config)?;
 
+    // Create conductor and executor
+    let mut conductor = Conductor::new(panels.llm_registry.clone(), event_bus.sender());
+    let executor = Executor::new(
+        event_bus.sender(),
+        panels.agent_registry.clone(),
+        state.cwd.clone(),
+    );
+
     // Start file watcher for the project directory
     let _file_watcher = FileWatcher::new(&state.cwd, event_bus.sender())
         .map_err(|e| axiom::core::AxiomError::Config(format!("File watcher error: {}", e)))?;
@@ -110,7 +119,15 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
 
         // Process events with timeout (50ms for responsive UI)
         if let Some(event) = event_bus.recv_timeout(Duration::from_millis(50)) {
-            if handle_event(&event, &mut state, &mut panels, screen_area, &mut config)? {
+            if handle_event(
+                &event,
+                &mut state,
+                &mut panels,
+                screen_area,
+                &mut config,
+                &mut conductor,
+                &executor,
+            )? {
                 break; // Quit requested
             }
 
@@ -124,16 +141,23 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
 
         // Drain additional events to prevent lag
         for event in event_bus.drain(50) {
-            if handle_event(&event, &mut state, &mut panels, screen_area, &mut config)? {
+            if handle_event(
+                &event,
+                &mut state,
+                &mut panels,
+                screen_area,
+                &mut config,
+                &mut conductor,
+                &executor,
+            )? {
                 break;
             }
         }
 
         // Check if file tree wants to open a file (auto-open on selection)
         if let Some(path) = panels.file_tree.take_pending_open() {
-            if let Err(e) = panels.editor.open(&path) {
-                state.error(format!("Failed to open: {}", e));
-            }
+            // Switch output context to show this file
+            panels.set_output_context(OutputContext::File { path: path.clone() });
             // Don't switch focus - let user keep navigating file tree
         }
 
@@ -157,6 +181,8 @@ fn handle_event(
     panels: &mut PanelRegistry,
     screen_area: ratatui::layout::Rect,
     config: &mut AxiomConfig,
+    conductor: &mut Conductor,
+    executor: &Executor,
 ) -> Result<bool> {
     match event {
         // Global key bindings (checked first)
@@ -462,48 +488,130 @@ fn handle_event(
             }
         }
 
-        // PTY output - route to terminal panel
+        // PTY output - currently disabled (will be handled by shell agent)
         Event::PtyOutput(_) | Event::PtyExit(_) => {
-            panels.terminal.handle_input(event, state)?;
+            // TODO: Route to shell agent when implemented
         }
 
-        // LLM events - route to chat panel
+        // LLM events - currently disabled (will be handled by conductor)
         Event::LlmChunk(_) | Event::LlmDone | Event::LlmError(_) => {
-            panels.chat.handle_input(event, state)?;
+            // TODO: Route to conductor when implemented
         }
 
-        // File modification from LLM - route to editor (opens in new tab if needed)
-        Event::FileModification { ref path, ref content } => {
-            let file_path = std::path::PathBuf::from(path);
+        // New agent events
+        Event::ConductorRequest(ref text) => {
+            conductor.process(text.clone());
+            // Switch to agent output view
+            let registry = panels.agent_registry.read();
+            if let Some(agent_id) = registry.selected_id() {
+                drop(registry);
+                panels.set_output_context(OutputContext::Agent { agent_id });
+            }
+        }
 
-            // Resolve relative paths against cwd
+        Event::AgentSpawn(ref request) => {
+            // Spawn the agent in registry
+            let agent_id = {
+                let mut registry = panels.agent_registry.write();
+                registry.spawn(request.clone())
+            };
+
+            // Execute non-conductor agents
+            if request.agent_type != axiom::agents::AgentType::Conductor {
+                executor.execute(agent_id, request);
+            } else {
+                // Store the persistent conductor agent ID
+                conductor.set_agent_id(agent_id);
+                // Conductor handles its own execution
+                conductor.execute(agent_id, request.parameters.as_deref().unwrap_or(""));
+            }
+
+            // Only switch context for top-level agents (no parent)
+            // Child agents are shown in the Conductor's aggregated view
+            if request.parent_id.is_none() {
+                panels.set_output_context(OutputContext::Agent { agent_id });
+            }
+        }
+
+        Event::AgentUpdate { id, ref status } => {
+            let mut registry = panels.agent_registry.write();
+            if let Some(agent) = registry.get_mut(*id) {
+                agent.status = status.clone();
+            }
+        }
+
+        Event::AgentOutput { id, ref chunk } => {
+            let mut registry = panels.agent_registry.write();
+            registry.append_output(*id, chunk);
+        }
+
+        Event::AgentComplete { id } => {
+            let mut registry = panels.agent_registry.write();
+            registry.complete(*id);
+        }
+
+        Event::AgentWake(id) => {
+            // Wake an idle agent (used for persistent Conductor)
+            let mut registry = panels.agent_registry.write();
+            if let Some(agent) = registry.get_mut(*id) {
+                // Add separator for new interaction in output
+                agent.output.push_str("\n─────────────────────────────────────\n");
+                agent.status = axiom::agents::AgentStatus::Running;
+            }
+            drop(registry);
+            // Switch context to show the conductor
+            panels.set_output_context(OutputContext::Agent { agent_id: *id });
+        }
+
+        Event::SwitchContext(ref context) => {
+            panels.set_output_context(context.clone());
+        }
+
+        Event::ShellExecute(ref cmd) => {
+            // Spawn shell agent (no parent - direct shell command)
+            let request = axiom::agents::AgentSpawnRequest {
+                agent_type: axiom::agents::AgentType::Shell,
+                name: "Shell".to_string(),
+                description: truncate_cmd(cmd, 50),
+                parameters: Some(cmd.clone()),
+                parent_id: None,
+            };
+            let agent_id = {
+                let mut registry = panels.agent_registry.write();
+                registry.spawn(request.clone())
+            };
+            executor.execute(agent_id, &request);
+            panels.set_output_context(OutputContext::Agent { agent_id });
+        }
+
+        // File modification from LLM - for now just log (will be handled by coder agent)
+        Event::FileModification { ref path, ref content } => {
+            // TODO: Route to coder agent when implemented
+            // For now, write the file directly
+            let file_path = std::path::PathBuf::from(path);
             let resolved_path = if file_path.is_absolute() {
                 file_path
             } else {
                 state.cwd.join(&file_path)
             };
 
-            // Apply modification (automatically opens/switches to tab)
-            panels.editor.apply_modification_to_path(&resolved_path, content);
-            state.info(format!("Modified: {}", path));
+            if let Err(e) = std::fs::write(&resolved_path, content) {
+                state.error(format!("Failed to write {}: {}", path, e));
+            } else {
+                state.info(format!("Modified: {}", path));
+                // Switch to show the modified file
+                panels.set_output_context(OutputContext::File { path: resolved_path });
+            }
         }
 
         // File changed on disk (detected by file watcher)
         Event::FileChanged(ref path) => {
-            // Only auto-open if file is already open (update it) or is a source file
-            if panels.editor.has_file_open(path) {
-                // File is already open - reload it
-                if let Err(e) = panels.editor.open(path) {
-                    state.error(format!("Failed to reload {}: {}", path.display(), e));
-                } else {
+            // If currently viewing this file, refresh the view
+            if let OutputContext::File { path: current_path } = panels.output_context() {
+                if current_path == path {
+                    // Re-set the context to trigger a reload
+                    panels.set_output_context(OutputContext::File { path: path.clone() });
                     state.info(format!("Reloaded: {}", path.file_name().unwrap_or_default().to_string_lossy()));
-                }
-            } else if is_source_file(path) {
-                // Auto-open new/modified source files
-                if let Err(e) = panels.editor.open(path) {
-                    state.error(format!("Failed to open {}: {}", path.display(), e));
-                } else {
-                    state.info(format!("Opened: {}", path.file_name().unwrap_or_default().to_string_lossy()));
                 }
             }
         }
@@ -622,29 +730,15 @@ fn create_provider_registry(config: &AxiomConfig) -> ProviderRegistry {
 
 /// Reloads LLM providers with a new configuration.
 ///
-/// Recreates the provider registry and updates the chat panel's provider.
+/// Recreates the provider registry for use by the conductor.
 fn reload_providers(panels: &mut PanelRegistry, config: &AxiomConfig) {
     // Create new provider registry
     let new_registry = create_provider_registry(config);
 
-    // Remember current model selection if possible
-    let current_provider = panels.chat.provider_id().to_string();
-
     // Replace the registry
     *panels.llm_registry.write() = new_registry;
 
-    // Try to set the same provider, or fall back to default
-    let registry = panels.llm_registry.read();
-    if let Some(provider) = registry.get(&current_provider) {
-        drop(registry);
-        panels.chat.set_provider(provider);
-    } else if let Some(provider) = panels.llm_registry.read().get(&config.llm.default_provider) {
-        drop(registry);
-        panels.chat.set_provider(provider);
-    } else if let Some(provider) = panels.llm_registry.read().active() {
-        drop(registry);
-        panels.chat.set_provider(provider);
-    }
+    // Provider selection will be handled by conductor when implemented
 }
 
 /// Checks if a given path corresponds to a source code file.
@@ -685,4 +779,13 @@ fn is_source_file(path: &std::path::Path) -> bool {
     }
 
     false
+}
+
+/// Truncate a command string for display
+fn truncate_cmd(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len.saturating_sub(3)])
+    }
 }

@@ -6,7 +6,9 @@
 //! - Integrated terminal with proper PTY resize
 //! - AI chat with streaming support
 //! - Multi-provider LLM integration (Claude, Gemini, Ollama, OpenAI)
+//! - Agentic orchestration system
 
+pub mod agents;
 pub mod clipboard;
 pub mod config;
 pub mod core;
@@ -19,7 +21,8 @@ pub mod ui;
 pub mod watcher;
 
 // Re-export commonly used types
+pub use agents::{Agent, AgentRegistry, AgentSpawnRequest, AgentStatus, AgentType};
 pub use core::{AxiomError, Result};
 pub use events::{Event, EventBus};
 pub use panels::PanelRegistry;
-pub use state::AppState;
+pub use state::{AgentId, AppState, OutputContext};

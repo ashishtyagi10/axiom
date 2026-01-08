@@ -6,6 +6,9 @@ use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError};
 use crossterm::event::{KeyEvent, MouseEvent};
 use std::time::Duration;
 
+use crate::agents::{AgentSpawnRequest, AgentStatus};
+use crate::state::{AgentId, OutputContext};
+
 /// Application events - unified event type
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -51,6 +54,45 @@ pub enum Event {
 
     /// Quit application request
     Quit,
+
+    // ===== Agent System Events =====
+
+    /// Request conductor to process user input
+    ConductorRequest(String),
+
+    /// Spawn a new agent
+    AgentSpawn(AgentSpawnRequest),
+
+    /// Agent status update
+    AgentUpdate {
+        /// The agent ID
+        id: AgentId,
+        /// New status
+        status: AgentStatus,
+    },
+
+    /// Agent output chunk (streaming)
+    AgentOutput {
+        /// The agent ID
+        id: AgentId,
+        /// Output chunk
+        chunk: String,
+    },
+
+    /// Agent completed
+    AgentComplete {
+        /// The agent ID
+        id: AgentId,
+    },
+
+    /// Wake an idle agent (used for persistent Conductor)
+    AgentWake(AgentId),
+
+    /// Switch output context (what's displayed in output area)
+    SwitchContext(OutputContext),
+
+    /// Execute shell command (from input routing)
+    ShellExecute(String),
 }
 
 /// Event bus using bounded crossbeam channels

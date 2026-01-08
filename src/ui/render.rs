@@ -16,13 +16,22 @@ pub fn render(frame: &mut Frame, state: &AppState, panels: &mut PanelRegistry) {
     let area = frame.area();
     let focused = state.focus.current();
 
-    // Get layout with focus-aware sizing (chat expands when focused)
+    // Get layout with focus-aware sizing
     let layout = get_layout_with_focus(area, Some(focused));
 
-    panels.file_tree.render(frame, layout.file_tree, focused == PanelId::FILE_TREE);
-    panels.editor.render(frame, layout.editor, focused == PanelId::EDITOR);
-    panels.terminal.render(frame, layout.terminal, focused == PanelId::TERMINAL);
-    panels.chat.render(frame, layout.chat, focused == PanelId::CHAT);
+    // Render all panels
+    panels
+        .file_tree
+        .render(frame, layout.file_tree, focused == PanelId::FILE_TREE);
+    panels
+        .output
+        .render(frame, layout.output, focused == PanelId::OUTPUT);
+    panels
+        .input
+        .render(frame, layout.input, focused == PanelId::INPUT);
+    panels
+        .agents
+        .render(frame, layout.agents, focused == PanelId::AGENTS);
 
     // Render status bar and get model badge area
     let model_badge_area = render_status_bar(frame, layout.status, state, panels);
@@ -40,11 +49,29 @@ pub fn render(frame: &mut Frame, state: &AppState, panels: &mut PanelRegistry) {
 }
 
 /// Render the status bar, returns the model badge area for click detection
-fn render_status_bar(frame: &mut Frame, area: Rect, state: &AppState, panels: &PanelRegistry) -> Rect {
+fn render_status_bar(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AppState,
+    panels: &PanelRegistry,
+) -> Rect {
     let focused = state.focus.current();
     let mode = format!(" {} ", state.input_mode_name());
     let focus = format!(" {} ", panel_name(focused));
-    let model = format!(" 🤖 {} ", panels.chat.current_model());
+
+    // Get running agents count
+    let registry = panels.agent_registry.read();
+    let running = registry.running_count();
+    let total = registry.len();
+    drop(registry);
+
+    let agents_badge = if running > 0 {
+        format!(" ⚡ {}/{} ", running, total)
+    } else if total > 0 {
+        format!(" ✓ {} ", total)
+    } else {
+        " 🤖 ".to_string()
+    };
 
     let status_text = if let Some(msg) = &state.status_message {
         msg.text.clone()
@@ -53,12 +80,11 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AppState, panels: &P
     };
 
     // Calculate model badge position for click detection
-    // mode + " " + focus + " " = prefix before model badge
     let prefix_len = mode.len() + 1 + focus.len() + 1;
     let model_badge_area = Rect::new(
         area.x + prefix_len as u16,
         area.y,
-        model.len() as u16,
+        agents_badge.len() as u16,
         1,
     );
 
@@ -66,20 +92,25 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AppState, panels: &P
     let spans = vec![
         Span::styled(mode, Style::default().bg(Color::Blue).fg(Color::White)),
         Span::raw(" "),
-        Span::styled(focus, Style::default().bg(Color::DarkGray).fg(Color::White)),
+        Span::styled(
+            focus,
+            Style::default().bg(Color::DarkGray).fg(Color::White),
+        ),
         Span::raw(" "),
-        Span::styled(model, Style::default().bg(Color::Magenta).fg(Color::White)),
+        Span::styled(
+            agents_badge,
+            Style::default().bg(Color::Magenta).fg(Color::White),
+        ),
         Span::raw(" "),
         Span::styled(status_text, Style::default().fg(Color::Gray)),
         Span::raw("  "),
         Span::styled(
-            " Ctrl+,: Settings  Ctrl+M: Model  q: Quit  Tab: Switch ",
+            " !cmd: Shell  Tab: Switch  q: Quit ",
             Style::default().fg(Color::DarkGray),
         ),
     ];
 
-    let status = Paragraph::new(Line::from(spans))
-        .style(Style::default().bg(Color::Black));
+    let status = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Black));
 
     frame.render_widget(status, area);
 
@@ -90,9 +121,9 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AppState, panels: &P
 fn panel_name(id: PanelId) -> &'static str {
     match id {
         PanelId::FILE_TREE => "Files",
-        PanelId::EDITOR => "Editor",
-        PanelId::TERMINAL => "Terminal",
-        PanelId::CHAT => "Chat",
+        PanelId::OUTPUT => "Output",
+        PanelId::INPUT => "Input",
+        PanelId::AGENTS => "Agents",
         _ => "Unknown",
     }
 }
