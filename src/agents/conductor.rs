@@ -99,10 +99,10 @@ impl Conductor {
             status: AgentStatus::Running,
         });
 
-        // Output user's question first (chat interface style)
+        // Output user's question first (chat interface style, right-aligned box)
         let _ = self.event_tx.send(Event::AgentOutput {
             id: agent_id,
-            chunk: format!("\n**You:** {}\n\n", task),
+            chunk: format!(">>>user\n{}\n<<<\n\n", task),
         });
 
         let event_tx = self.event_tx.clone();
@@ -184,10 +184,10 @@ fn execute_conductor(
     // Send to LLM
     provider.send_message(messages, llm_tx);
 
-    // Output assistant prefix (chat interface style)
+    // Output Axiom prefix (chat interface style)
     let _ = event_tx.send(Event::AgentOutput {
         id: agent_id,
-        chunk: "**Assistant:** ".to_string(),
+        chunk: "**Axiom:** ".to_string(),
     });
 
     // Stream responses to agent output

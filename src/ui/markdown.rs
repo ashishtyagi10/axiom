@@ -154,6 +154,115 @@ impl MarkdownRenderer {
     }
 
     fn render(mut self, text: &str) -> Vec<Line<'static>> {
+        // Process text in segments, handling >>>user...<<< blocks specially
+        let mut remaining = text;
+
+        while !remaining.is_empty() {
+            // Look for user message block
+            if let Some(start) = remaining.find(">>>user\n") {
+                // Render text before the block
+                if start > 0 {
+                    self.render_markdown_segment(&remaining[..start]);
+                }
+
+                // Find the end of the user block
+                let block_start = start + 8; // ">>>user\n".len()
+                if let Some(end) = remaining[block_start..].find("\n<<<") {
+                    let user_text = &remaining[block_start..block_start + end];
+                    self.render_user_message_box(user_text);
+                    remaining = &remaining[block_start + end + 4..]; // skip "\n<<<"
+                } else {
+                    // No closing tag, render rest as markdown
+                    self.render_markdown_segment(remaining);
+                    break;
+                }
+            } else {
+                // No more user blocks, render rest as markdown
+                self.render_markdown_segment(remaining);
+                break;
+            }
+        }
+
+        // Flush any remaining content
+        if !self.current_line.is_empty() {
+            self.flush_line();
+        }
+
+        self.lines
+    }
+
+    /// Render a user message as a right-aligned box
+    fn render_user_message_box(&mut self, text: &str) {
+        let text_len = text.lines().map(|l| l.len()).max().unwrap_or(0);
+        let box_width: usize = 50.min(text_len + 4).max(20);
+        let inner_width = box_width - 4; // Account for "│ " and " │"
+
+        // Styles
+        let border_style = Style::default()
+            .fg(Color::Rgb(100, 140, 180))
+            .bg(Color::Rgb(35, 45, 55));
+        let text_style = Style::default()
+            .fg(Color::Rgb(220, 230, 240))
+            .bg(Color::Rgb(35, 45, 55));
+
+        // Calculate right-alignment padding (assume ~80 char width)
+        let display_width: usize = 78;
+        let padding = display_width.saturating_sub(box_width);
+        let pad_str = " ".repeat(padding);
+
+        // Top border
+        self.lines.push(Line::from(vec![
+            Span::raw(pad_str.clone()),
+            Span::styled("┌", border_style),
+            Span::styled("─".repeat(box_width - 2), border_style),
+            Span::styled("┐", border_style),
+        ]));
+
+        // Content lines - wrap text if needed
+        for line in text.lines() {
+            // Simple word wrapping
+            let mut remaining = line;
+            while !remaining.is_empty() {
+                let chunk_len = remaining.len().min(inner_width);
+                let chunk = &remaining[..chunk_len];
+                let text_padding = inner_width.saturating_sub(chunk.len());
+
+                self.lines.push(Line::from(vec![
+                    Span::raw(pad_str.clone()),
+                    Span::styled("│ ", border_style),
+                    Span::styled(chunk.to_string(), text_style),
+                    Span::styled(" ".repeat(text_padding), text_style),
+                    Span::styled(" │", border_style),
+                ]));
+
+                remaining = &remaining[chunk_len..];
+            }
+        }
+
+        // If text was empty, add one empty line
+        if text.is_empty() || text.lines().count() == 0 {
+            self.lines.push(Line::from(vec![
+                Span::raw(pad_str.clone()),
+                Span::styled("│ ", border_style),
+                Span::styled(" ".repeat(inner_width), text_style),
+                Span::styled(" │", border_style),
+            ]));
+        }
+
+        // Bottom border
+        self.lines.push(Line::from(vec![
+            Span::raw(pad_str),
+            Span::styled("└", border_style),
+            Span::styled("─".repeat(box_width - 2), border_style),
+            Span::styled("┘", border_style),
+        ]));
+
+        // Add empty line after
+        self.lines.push(Line::from(""));
+    }
+
+    /// Render a segment of markdown
+    fn render_markdown_segment(&mut self, text: &str) {
         let mut options = Options::empty();
         options.insert(Options::ENABLE_STRIKETHROUGH);
         options.insert(Options::ENABLE_TABLES);
@@ -188,13 +297,6 @@ impl MarkdownRenderer {
                 _ => {}
             }
         }
-
-        // Flush any remaining content
-        if !self.current_line.is_empty() {
-            self.flush_line();
-        }
-
-        self.lines
     }
 
     fn handle_start_tag(&mut self, tag: Tag) {
