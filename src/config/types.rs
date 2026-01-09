@@ -2,6 +2,7 @@
 //!
 //! Defines the structure of `.axiom.toml` configuration.
 
+use super::cli_agents::CliAgentsConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -11,6 +12,10 @@ pub struct AxiomConfig {
     /// LLM configuration
     #[serde(default)]
     pub llm: LlmConfig,
+
+    /// CLI agent configurations
+    #[serde(default)]
+    pub cli_agents: CliAgentsConfig,
 }
 
 /// LLM configuration section

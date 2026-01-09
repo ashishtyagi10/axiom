@@ -3,7 +3,7 @@
 //! Entry point with proper terminal setup and cleanup.
 
 use axiom::{
-    agents::{Conductor, Executor},
+    agents::{Conductor, Executor, PtyAgentManager},
     config::{config_path, load_config, save_config, AxiomConfig},
     core::Result,
     events::{Event, EventBus},
@@ -94,6 +94,12 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
         state.cwd.clone(),
     );
 
+    // Create PTY agent manager for CLI agents (wrapped in Arc<RwLock> for sharing)
+    let pty_manager = Arc::new(parking_lot::RwLock::new(PtyAgentManager::new(event_bus.sender())));
+
+    // Give OutputPanel access to PTY manager for CLI agent rendering
+    panels.output.set_pty_manager(pty_manager.clone(), event_bus.sender());
+
     // Start file watcher for the project directory
     let _file_watcher = FileWatcher::new(&state.cwd, event_bus.sender())
         .map_err(|e| axiom::core::AxiomError::Config(format!("File watcher error: {}", e)))?;
@@ -127,6 +133,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                 &mut config,
                 &mut conductor,
                 &executor,
+                &pty_manager,
             )? {
                 break; // Quit requested
             }
@@ -149,6 +156,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                 &mut config,
                 &mut conductor,
                 &executor,
+                &pty_manager,
             )? {
                 break;
             }
@@ -183,6 +191,7 @@ fn handle_event(
     config: &mut AxiomConfig,
     conductor: &mut Conductor,
     executor: &Executor,
+    pty_manager: &Arc<parking_lot::RwLock<PtyAgentManager>>,
 ) -> Result<bool> {
     match event {
         // Global key bindings (checked first)
@@ -599,6 +608,75 @@ fn handle_event(
             };
             executor.execute(agent_id, &request);
             panels.set_output_context(OutputContext::Agent { agent_id });
+        }
+
+        // ===== CLI Agent Events =====
+
+        Event::CliAgentInvoke { ref agent_id, ref prompt } => {
+            // Get CLI agent config
+            if let Some(cli_config) = config.cli_agents.get(agent_id) {
+                // Spawn agent in registry
+                let request = axiom::agents::AgentSpawnRequest {
+                    agent_type: axiom::agents::AgentType::CliAgent {
+                        config_id: agent_id.clone(),
+                    },
+                    name: cli_config.name.clone(),
+                    description: truncate_cmd(prompt, 50),
+                    parameters: Some(prompt.clone()),
+                    parent_id: None,
+                };
+                let runtime_id = {
+                    let mut registry = panels.agent_registry.write();
+                    registry.spawn(request)
+                };
+
+                // Start PTY session
+                let mut manager = pty_manager.write();
+                if let Err(e) = manager.start(runtime_id, cli_config, prompt, &state.cwd) {
+                    drop(manager);
+                    state.error(format!("Failed to start {}: {}", cli_config.name, e));
+                    let mut registry = panels.agent_registry.write();
+                    registry.error(runtime_id, e.to_string());
+                } else {
+                    drop(manager);
+                    // Mark as running and switch to output view
+                    let mut registry = panels.agent_registry.write();
+                    registry.start(runtime_id);
+                    drop(registry);
+                    panels.set_output_context(OutputContext::Agent { agent_id: runtime_id });
+                    state.info(format!("Started {} agent", cli_config.name));
+                }
+            } else {
+                state.error(format!("Unknown CLI agent: {}", agent_id));
+            }
+        }
+
+        Event::CliAgentOutput { id, ref data } => {
+            // Output is already processed by the PTY parser - no need to store separately
+            // The OutputPanel will render directly from the PTY manager's screen
+            // But we still track line count for status
+            let mut registry = panels.agent_registry.write();
+            if let Some(agent) = registry.get_mut(*id) {
+                agent.line_count += data.iter().filter(|&&b| b == b'\n').count();
+            }
+        }
+
+        Event::CliAgentExit { id, exit_code } => {
+            // Mark agent as complete
+            pty_manager.write().mark_exited(*id);
+            let mut registry = panels.agent_registry.write();
+            if *exit_code == 0 {
+                registry.complete(*id);
+            } else {
+                registry.error(*id, format!("Exited with code {}", exit_code));
+            }
+        }
+
+        Event::CliAgentInput { id, ref data } => {
+            // Forward input to PTY
+            if let Err(e) = pty_manager.write().write(*id, data) {
+                state.error(format!("Failed to write to CLI agent: {}", e));
+            }
         }
 
         // File modification from LLM - for now just log (will be handled by coder agent)

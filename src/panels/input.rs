@@ -3,8 +3,10 @@
 //! Handles user input with prefix-based routing:
 //! - Plain text → LLM conductor
 //! - `!command` or `:command` → Shell execution
+//! - `#agent prompt` → CLI agent invocation (e.g., #claude, #gemini)
 
 use crate::clipboard;
+use crate::config::CliAgentsConfig;
 use crate::core::Result;
 use crate::events::Event;
 use crate::panels::Panel;
@@ -12,13 +14,14 @@ use crate::state::{AppState, PanelId};
 use crossbeam_channel::Sender;
 use crossterm::event::{KeyCode, KeyModifiers, MouseEventKind};
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
 use std::cell::RefCell;
+use std::sync::Arc;
 
 /// Parsed input command
 #[derive(Debug, Clone)]
@@ -29,23 +32,63 @@ pub enum InputCommand {
     /// Shell command (prefixed with ! or :)
     Shell(String),
 
+    /// CLI agent invocation (prefixed with #)
+    CliAgent {
+        /// The agent ID (e.g., "claude", "gemini")
+        agent_id: String,
+        /// The user's prompt
+        prompt: String,
+    },
+
     /// Empty input
     Empty,
 }
 
 impl InputCommand {
     /// Parse input text into a command
-    pub fn parse(input: &str) -> Self {
+    ///
+    /// # Arguments
+    /// * `input` - The raw input text
+    /// * `cli_agents` - Optional CLI agents config for validating agent IDs
+    pub fn parse(input: &str, cli_agents: Option<&CliAgentsConfig>) -> Self {
         let trimmed = input.trim();
         if trimmed.is_empty() {
             return InputCommand::Empty;
         }
 
+        // Check for CLI agent prefix (#agent)
+        if trimmed.starts_with('#') {
+            let rest = &trimmed[1..];
+            // Split at first space: #agent prompt
+            let (agent_id, prompt) = match rest.split_once(' ') {
+                Some((id, p)) => (id.to_string(), p.to_string()),
+                None => (rest.to_string(), String::new()),
+            };
+
+            // Validate agent ID if config is provided
+            if let Some(config) = cli_agents {
+                if config.is_available(&agent_id) {
+                    return InputCommand::CliAgent { agent_id, prompt };
+                }
+            } else {
+                // No config validation, allow any agent ID
+                return InputCommand::CliAgent { agent_id, prompt };
+            }
+
+            // Fall through to chat if agent not found
+        }
+
+        // Check for shell prefix (! or :)
         if trimmed.starts_with('!') || trimmed.starts_with(':') {
             InputCommand::Shell(trimmed[1..].to_string())
         } else {
             InputCommand::Chat(trimmed.to_string())
         }
+    }
+
+    /// Parse without CLI agent validation
+    pub fn parse_simple(input: &str) -> Self {
+        Self::parse(input, None)
     }
 }
 
@@ -77,11 +120,14 @@ pub struct InputPanel {
 
     /// Whether input is currently processing
     is_processing: bool,
+
+    /// CLI agents configuration
+    cli_agents: Arc<CliAgentsConfig>,
 }
 
 impl InputPanel {
     /// Create a new input panel
-    pub fn new(event_tx: Sender<Event>) -> Self {
+    pub fn new(event_tx: Sender<Event>, cli_agents: Arc<CliAgentsConfig>) -> Self {
         Self {
             input: String::new(),
             cursor: 0,
@@ -92,7 +138,13 @@ impl InputPanel {
             event_tx,
             input_area: RefCell::new(Rect::default()),
             is_processing: false,
+            cli_agents,
         }
+    }
+
+    /// Update CLI agents configuration
+    pub fn set_cli_agents(&mut self, cli_agents: Arc<CliAgentsConfig>) {
+        self.cli_agents = cli_agents;
     }
 
     /// Set processing state
@@ -300,7 +352,7 @@ impl InputPanel {
             return;
         }
 
-        let command = InputCommand::parse(&self.input);
+        let command = InputCommand::parse(&self.input, Some(&self.cli_agents));
 
         // Add to history
         self.history.push(self.input.clone());
@@ -315,6 +367,9 @@ impl InputPanel {
             }
             InputCommand::Shell(cmd) => {
                 let _ = self.event_tx.send(Event::ShellExecute(cmd));
+            }
+            InputCommand::CliAgent { agent_id, prompt } => {
+                let _ = self.event_tx.send(Event::CliAgentInvoke { agent_id, prompt });
             }
             InputCommand::Empty => {}
         }
@@ -365,6 +420,8 @@ impl InputPanel {
         let trimmed = self.input.trim_start();
         if trimmed.starts_with('!') || trimmed.starts_with(':') {
             ("$ ", Style::default().fg(Color::Yellow))
+        } else if trimmed.starts_with('#') {
+            ("# ", Style::default().fg(Color::Magenta))
         } else {
             ("> ", Style::default().fg(Color::Cyan))
         }

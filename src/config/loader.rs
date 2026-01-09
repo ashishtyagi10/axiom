@@ -160,7 +160,7 @@ fn apply_env_overrides(mut config: AxiomConfig) -> AxiomConfig {
 
 /// Create a sample configuration file content
 pub fn sample_config() -> &'static str {
-    r#"# Axiom Configuration
+    r##"# Axiom Configuration
 # Place this file in your project root as .axiom.toml
 # or in ~/.config/axiom/config.toml for global settings
 
@@ -193,7 +193,37 @@ default_model = "gemma3:4b"
 enabled = false
 api_key = "${OPENAI_API_KEY}"
 default_model = "gpt-4o"
-"#
+
+# CLI Coding Agents
+# Invoke with #agent syntax, e.g., "#claude explain this code"
+
+[cli_agents.agents.claude]
+enabled = true
+name = "Claude Code"
+command = "claude"
+icon = "🤖"
+
+[cli_agents.agents.gemini]
+enabled = true
+name = "Gemini CLI"
+command = "gemini"
+icon = "💎"
+
+[cli_agents.agents.copilot]
+enabled = true
+name = "GitHub Copilot"
+command = "gh"
+default_args = ["copilot", "suggest"]
+icon = "🐙"
+
+# Add custom agents:
+# [cli_agents.agents.myagent]
+# enabled = true
+# name = "My Agent"
+# command = "/path/to/agent"
+# default_args = ["--interactive"]
+# icon = "⚙️"
+"##
 }
 
 #[cfg(test)]

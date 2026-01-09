@@ -28,7 +28,7 @@ pub use output::OutputPanel;
 pub use editor::{DiffTracker, Highlighter, Position, Selection};
 
 use crate::agents::AgentRegistry;
-use crate::config::AxiomConfig;
+use crate::config::{AxiomConfig, CliAgentsConfig};
 use crate::core::Result;
 use crate::events::Event;
 use crate::llm::ProviderRegistry;
@@ -116,11 +116,12 @@ impl PanelRegistry {
     ) -> Result<Self> {
         let llm_registry = Arc::new(RwLock::new(llm_registry));
         let agent_registry = Arc::new(RwLock::new(AgentRegistry::new()));
+        let cli_agents = Arc::new(config.cli_agents.clone());
 
         Ok(Self {
             file_tree: FileTreePanel::new(cwd),
             output: OutputPanel::new(agent_registry.clone()),
-            input: InputPanel::new(event_tx.clone()),
+            input: InputPanel::new(event_tx.clone(), cli_agents),
             agents: AgentsPanel::new(agent_registry.clone(), event_tx),
             agent_registry,
             model_selector: ModelSelector::new(),

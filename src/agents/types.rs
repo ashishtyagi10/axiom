@@ -84,6 +84,12 @@ pub enum AgentType {
 
     /// Custom tool agent with a specified name
     Custom(String),
+
+    /// External CLI agent (Claude Code, Gemini CLI, etc.)
+    CliAgent {
+        /// The agent config ID (e.g., "claude", "gemini")
+        config_id: String,
+    },
 }
 
 impl AgentType {
@@ -96,6 +102,7 @@ impl AgentType {
             AgentType::FileOps => "FileOps",
             AgentType::Search => "Search",
             AgentType::Custom(name) => name,
+            AgentType::CliAgent { config_id } => config_id,
         }
     }
 
@@ -108,6 +115,20 @@ impl AgentType {
             AgentType::FileOps => "📁",
             AgentType::Search => "🔍",
             AgentType::Custom(_) => "🔧",
+            AgentType::CliAgent { .. } => "🤖",
+        }
+    }
+
+    /// Check if this is a CLI agent
+    pub fn is_cli_agent(&self) -> bool {
+        matches!(self, AgentType::CliAgent { .. })
+    }
+
+    /// Get the CLI agent config ID if this is a CLI agent
+    pub fn cli_agent_config_id(&self) -> Option<&str> {
+        match self {
+            AgentType::CliAgent { config_id } => Some(config_id),
+            _ => None,
         }
     }
 }

@@ -397,6 +397,7 @@ impl SettingsModal {
                 max_retries: 3,
                 providers,
             },
+            cli_agents: Default::default(),
         }
     }
 

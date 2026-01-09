@@ -96,6 +96,40 @@ pub enum Event {
 
     /// Execute shell command (from input routing)
     ShellExecute(String),
+
+    // ===== CLI Agent Events =====
+
+    /// Invoke a CLI agent with a prompt
+    CliAgentInvoke {
+        /// The agent ID (e.g., "claude", "gemini")
+        agent_id: String,
+        /// The user's prompt
+        prompt: String,
+    },
+
+    /// CLI agent PTY output
+    CliAgentOutput {
+        /// The agent's runtime ID
+        id: AgentId,
+        /// Raw PTY output data
+        data: Vec<u8>,
+    },
+
+    /// CLI agent PTY exited
+    CliAgentExit {
+        /// The agent's runtime ID
+        id: AgentId,
+        /// Exit code
+        exit_code: i32,
+    },
+
+    /// Send input to a CLI agent
+    CliAgentInput {
+        /// The agent's runtime ID
+        id: AgentId,
+        /// Raw input data to send
+        data: Vec<u8>,
+    },
 }
 
 /// Event bus using bounded crossbeam channels

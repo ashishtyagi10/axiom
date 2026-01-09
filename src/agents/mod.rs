@@ -5,10 +5,14 @@
 
 mod conductor;
 mod executor;
+mod pty_agent;
+mod pty_manager;
 mod types;
 
 pub use conductor::Conductor;
 pub use executor::Executor;
+pub use pty_agent::PtyAgent;
+pub use pty_manager::PtyAgentManager;
 pub use types::{AgentStatus, AgentType};
 
 use crate::state::AgentId;

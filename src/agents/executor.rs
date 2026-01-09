@@ -77,6 +77,10 @@ impl Executor {
                     });
                     Ok(())
                 }
+                AgentType::CliAgent { .. } => {
+                    // CLI agents are handled by PtyAgentManager, not this executor
+                    Ok(())
+                }
             };
 
             // Update agent status based on result
