@@ -596,22 +596,29 @@ fn handle_event(
         Event::SwitchContext(ref context) => {
             panels.set_output_context(context.clone());
 
-            // Smart focus: determine where to focus based on agent type
-            if let OutputContext::Agent { agent_id } = context {
-                let registry = panels.agent_registry.read();
-                if let Some(agent) = registry.get(*agent_id) {
-                    let is_cli_agent = agent.agent_type.is_cli_agent();
-                    drop(registry);
+            // Smart focus: determine where to focus based on context type
+            match context {
+                OutputContext::Agent { agent_id } => {
+                    let registry = panels.agent_registry.read();
+                    if let Some(agent) = registry.get(*agent_id) {
+                        let is_cli_agent = agent.agent_type.is_cli_agent();
+                        drop(registry);
 
-                    if is_cli_agent {
-                        // CLI agent: focus Output panel for PTY interaction
-                        state.focus.focus(PanelId::OUTPUT);
-                        panels.handle_focus_change(PanelId::OUTPUT, screen_area);
-                    } else {
-                        // Conductor/other agents: focus Input panel for typing prompts
-                        state.focus.focus(PanelId::INPUT);
-                        panels.handle_focus_change(PanelId::INPUT, screen_area);
+                        if is_cli_agent {
+                            // CLI agent: focus Output panel for PTY interaction
+                            state.focus.focus(PanelId::OUTPUT);
+                            panels.handle_focus_change(PanelId::OUTPUT, screen_area);
+                        } else {
+                            // Conductor/other agents: focus Input panel for typing prompts
+                            state.focus.focus(PanelId::INPUT);
+                            panels.handle_focus_change(PanelId::INPUT, screen_area);
+                        }
                     }
+                }
+                OutputContext::File { .. } | OutputContext::Empty => {
+                    // File viewing is passive - focus Input for commands
+                    state.focus.focus(PanelId::INPUT);
+                    panels.handle_focus_change(PanelId::INPUT, screen_area);
                 }
             }
         }
