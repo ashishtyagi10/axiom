@@ -524,6 +524,10 @@ fn handle_event(
             if let Some(agent_id) = registry.selected_id() {
                 drop(registry);
                 panels.set_output_context(OutputContext::Agent { agent_id });
+
+                // Focus Input panel for typing more prompts to Conductor
+                state.focus.focus(PanelId::INPUT);
+                panels.handle_focus_change(PanelId::INPUT, screen_area);
             }
         }
 
@@ -591,6 +595,30 @@ fn handle_event(
 
         Event::SwitchContext(ref context) => {
             panels.set_output_context(context.clone());
+
+            // Smart focus: determine where to focus based on agent type
+            if let OutputContext::Agent { agent_id } = context {
+                let registry = panels.agent_registry.read();
+                if let Some(agent) = registry.get(*agent_id) {
+                    let is_cli_agent = agent.agent_type.is_cli_agent();
+                    drop(registry);
+
+                    if is_cli_agent {
+                        // CLI agent: focus Output panel for PTY interaction
+                        state.focus.focus(PanelId::OUTPUT);
+                        panels.handle_focus_change(PanelId::OUTPUT, screen_area);
+                    } else {
+                        // Conductor/other agents: focus Input panel for typing prompts
+                        state.focus.focus(PanelId::INPUT);
+                        panels.handle_focus_change(PanelId::INPUT, screen_area);
+                    }
+                }
+            }
+        }
+
+        Event::FocusPanel(panel_id) => {
+            state.focus.focus(*panel_id);
+            panels.handle_focus_change(*panel_id, screen_area);
         }
 
         Event::ShellExecute(ref cmd) => {
@@ -644,6 +672,11 @@ fn handle_event(
                     registry.start(runtime_id);
                     drop(registry);
                     panels.set_output_context(OutputContext::Agent { agent_id: runtime_id });
+
+                    // Focus Output panel for PTY interaction
+                    state.focus.focus(PanelId::OUTPUT);
+                    panels.handle_focus_change(PanelId::OUTPUT, screen_area);
+
                     state.info(format!("Started {} agent", cli_config.name));
                 }
             } else {

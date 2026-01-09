@@ -7,7 +7,7 @@ use crossterm::event::{KeyEvent, MouseEvent};
 use std::time::Duration;
 
 use crate::agents::{AgentSpawnRequest, AgentStatus};
-use crate::state::{AgentId, OutputContext};
+use crate::state::{AgentId, OutputContext, PanelId};
 
 /// Application events - unified event type
 #[derive(Debug, Clone)]
@@ -49,8 +49,8 @@ pub enum Event {
     /// Tick event for periodic updates (e.g., UI animations, polling)
     Tick,
 
-    /// Request to focus a specific panel by index
-    FocusPanel(usize),
+    /// Request to focus a specific panel (smart focus based on context)
+    FocusPanel(PanelId),
 
     /// Quit application request
     Quit,
