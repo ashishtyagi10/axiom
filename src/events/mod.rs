@@ -88,6 +88,9 @@ pub enum Event {
     /// Wake an idle agent (used for persistent Conductor)
     AgentWake(AgentId),
 
+    /// Conductor response complete - add to history for context
+    ConductorResponse(String),
+
     /// Switch output context (what's displayed in output area)
     SwitchContext(OutputContext),
 

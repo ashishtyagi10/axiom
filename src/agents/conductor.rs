@@ -99,10 +99,10 @@ impl Conductor {
             status: AgentStatus::Running,
         });
 
-        // Output user's question first (chat interface style, right-aligned box)
+        // Output user's question (chat interface style)
         let _ = self.event_tx.send(Event::AgentOutput {
             id: agent_id,
-            chunk: format!(">>>user\n{}\n<<<\n\n", task),
+            chunk: format!(">>>user\n{}\n<<<\n", task),
         });
 
         let event_tx = self.event_tx.clone();
@@ -202,11 +202,13 @@ fn execute_conductor(
                 });
             }
             Ok(Event::LlmDone) => {
-                // Close Axiom response box
+                // Close Axiom response box with separator for next Q&A pair
                 let _ = event_tx.send(Event::AgentOutput {
                     id: agent_id,
-                    chunk: "\n<<<\n".to_string(),
+                    chunk: "\n<<<\n\n".to_string(),
                 });
+                // Send response to add to conductor history (for LLM context)
+                let _ = event_tx.send(Event::ConductorResponse(full_response.clone()));
                 // Parse response for agent spawn commands (pass conductor_id as parent)
                 parse_and_spawn_agents(&full_response, &event_tx, agent_id);
                 // Set to Idle so conductor can be reused for next input

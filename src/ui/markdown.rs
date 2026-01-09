@@ -86,14 +86,11 @@ impl MarkdownRenderer {
     fn render_code_block(&mut self) {
         let content = std::mem::take(&mut self.code_block_content);
         let lang = self.code_block_lang.take();
-
-        // Calculate box width based on content
         let content_lines: Vec<&str> = content.lines().collect();
-        let max_line_len = content_lines.iter().map(|l| l.len()).max().unwrap_or(0);
-        let inner_width = max_line_len.max(40).min(76); // Min 40, max 76 chars for code
 
-        // Total width between corners = inner_width + 2 (for " " padding on each side)
-        let total_inner = inner_width + 2;
+        // Fixed width: use ~80 chars for code area (standard terminal width minus padding)
+        let inner_width: usize = 76;
+        let total_inner = inner_width + 2; // +2 for space padding on each side
 
         // Style definitions
         let border_style = Style::default()
@@ -127,10 +124,16 @@ impl MarkdownRenderer {
 
         // Code content - each line padded to fill the box
         for line in content_lines.iter() {
-            let padding = inner_width.saturating_sub(line.len());
+            // Truncate or pad line to fit fixed width
+            let display_line: String = if line.len() > inner_width {
+                format!("{}…", &line[..inner_width - 1])
+            } else {
+                line.to_string()
+            };
+            let padding = inner_width.saturating_sub(display_line.len());
             self.lines.push(Line::from(vec![
                 Span::styled("│ ", border_style),
-                Span::styled(line.to_string(), code_style),
+                Span::styled(display_line, code_style),
                 Span::styled(" ".repeat(padding), code_style),
                 Span::styled(" │", border_style),
             ]));
@@ -241,52 +244,39 @@ impl MarkdownRenderer {
         }
     }
 
-    /// Render a user message as right-aligned with diamond header
+    /// Render a user message with right-side visual indicator
+    /// Design philosophy: Clear visual distinction without complex positioning
+    /// - Header with "You ◆" signals user message
+    /// - Content has right-side border (│) - opposite of Axiom's left border
     fn render_user_message_box(&mut self, text: &str) {
-        // Styles - blue theme for user (matching Axiom style)
+        // Styles - blue theme for user
         let header_style = Style::default()
             .fg(Color::Rgb(100, 160, 220))
             .add_modifier(Modifier::BOLD);
-        let border_style = Style::default()
-            .fg(Color::Rgb(70, 90, 110));
-        let text_style = Style::default()
-            .fg(Color::Rgb(200, 210, 220));
+        let border_style = Style::default().fg(Color::Rgb(70, 100, 130));
+        let text_style = Style::default().fg(Color::Rgb(200, 210, 220));
 
-        // Calculate content width for right alignment
-        let max_content_width = text.lines().map(|l| l.len()).max().unwrap_or(0);
-        let header_width = 6; // "◆ You"
-        let content_with_border = max_content_width + 2; // "│ " prefix
-        let block_width = header_width.max(content_with_border);
-
-        // Right-align padding (assume ~78 char display width)
-        let display_width: usize = 78;
-        let header_padding = display_width.saturating_sub(header_width);
-        let content_padding = display_width.saturating_sub(content_with_border);
-
-        // Header with You label (right-aligned)
+        // Header: "You ◆" - diamond on right indicates user (opposite of Axiom)
         self.lines.push(Line::from(vec![
-            Span::raw(" ".repeat(header_padding)),
-            Span::styled("◆ ", header_style),
-            Span::styled("You", header_style),
+            Span::styled("You ", header_style),
+            Span::styled("◆", header_style),
         ]));
 
-        // Content lines (right-aligned with left border)
+        // Content lines with right-side border indicator
         for line in text.lines() {
-            let line_padding = display_width.saturating_sub(line.len() + 2);
             self.lines.push(Line::from(vec![
-                Span::raw(" ".repeat(line_padding)),
-                Span::styled("│ ", border_style),
+                Span::styled("  ", Style::default()), // indent
                 Span::styled(line.to_string(), text_style),
+                Span::styled(" │", border_style), // right border - signals "user side"
             ]));
         }
 
         // If text was empty, add placeholder
         if text.is_empty() || text.lines().count() == 0 {
-            let line_padding = display_width.saturating_sub(5);
             self.lines.push(Line::from(vec![
-                Span::raw(" ".repeat(line_padding)),
-                Span::styled("│ ", border_style),
+                Span::styled("  ", Style::default()),
                 Span::styled("...", text_style),
+                Span::styled(" │", border_style),
             ]));
         }
 
@@ -313,12 +303,32 @@ impl MarkdownRenderer {
 
         // Render content as markdown (supports code blocks, lists, etc.)
         if !text.is_empty() {
-            // Add left border indicator for each line
+            // Render the markdown content
             let rendered = MarkdownRenderer::new(text_style).render_markdown_only(text);
+
             for line in rendered {
-                let mut new_spans = vec![Span::styled("│ ", border_style)];
-                new_spans.extend(line.spans);
-                self.lines.push(Line::from(new_spans));
+                // Check if this line is part of a code block (starts with box characters)
+                let first_char = line.spans.first()
+                    .and_then(|s| s.content.chars().next())
+                    .unwrap_or(' ');
+
+                let is_code_block_line = matches!(first_char, '┌' | '│' | '└');
+
+                if is_code_block_line {
+                    // Code block lines - render as-is (they have their own box)
+                    self.lines.push(line);
+                } else if line.spans.is_empty() ||
+                          (line.spans.len() == 1 && line.spans[0].content.is_empty()) {
+                    // Empty line - just add border
+                    self.lines.push(Line::from(vec![
+                        Span::styled("│", border_style),
+                    ]));
+                } else {
+                    // Regular content - add left border prefix
+                    let mut new_spans = vec![Span::styled("│ ", border_style)];
+                    new_spans.extend(line.spans);
+                    self.lines.push(Line::from(new_spans));
+                }
             }
         }
 

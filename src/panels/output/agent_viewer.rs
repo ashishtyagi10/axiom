@@ -148,10 +148,8 @@ impl AgentViewer {
         let any_running = agent.status.is_running()
             || children.iter().any(|c| c.status.is_running());
         if any_running {
-            let max = self.max_scroll();
-            if self.scroll_offset + self.visible_height >= self.cached_line_count.saturating_sub(3) {
-                self.scroll_offset = max;
-            }
+            // Always scroll to bottom when streaming
+            self.scroll_offset = self.max_scroll();
         }
     }
 

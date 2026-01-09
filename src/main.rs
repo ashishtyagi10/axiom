@@ -9,7 +9,7 @@ use axiom::{
     events::{Event, EventBus},
     llm::{ClaudeProvider, GeminiProvider, OllamaProvider, ProviderRegistry},
     panels::{Panel, PanelRegistry},
-    state::{AppState, OutputContext},
+    state::{AppState, OutputContext, PanelId},
     ui::{self, settings::SettingsAction},
     watcher::FileWatcher,
 };
@@ -332,10 +332,19 @@ fn handle_event(
                 return Ok(false);
             }
 
-            // 'i' in Normal mode: Enter insert mode
-            if key.code == KeyCode::Char('i') && !state.input_mode.is_editing() && !state.input_mode.is_modal() {
+            // 'i' in Normal mode: Enter insert mode (but not if Input panel is focused - let it type directly)
+            if key.code == KeyCode::Char('i')
+                && !state.input_mode.is_editing()
+                && !state.input_mode.is_modal()
+                && state.focus.current() != PanelId::INPUT
+            {
                 state.input_mode.to_insert();
                 return Ok(false);
+            }
+
+            // Auto-enter insert mode when Input panel is focused and user types
+            if state.focus.current() == PanelId::INPUT && !state.input_mode.is_editing() {
+                state.input_mode.to_insert();
             }
 
             // Forward to focused panel
@@ -550,19 +559,24 @@ fn handle_event(
             registry.complete(*id);
         }
 
+        Event::ConductorResponse(ref response) => {
+            // Add assistant response to conductor history for LLM context
+            conductor.add_response(response.clone());
+        }
+
         Event::AgentWake(id) => {
             // Wake an idle agent (used for persistent Conductor)
             let mut registry = panels.agent_registry.write();
 
-            // Remove old child agents from previous interaction (keeps agent list clean)
+            // Remove old child agents from previous interaction
             registry.remove_children(*id);
 
             if let Some(agent) = registry.get_mut(*id) {
-                // Don't clear output - keep conversation history visible (chat interface style)
+                // Keep output history - displays as Q&A pairs (ChatGPT style)
+                // Each new interaction appends: question + answer
                 agent.status = axiom::agents::AgentStatus::Running;
             }
             drop(registry);
-            // Switch context to show the conductor
             panels.set_output_context(OutputContext::Agent { agent_id: *id });
         }
 
