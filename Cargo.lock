@@ -83,6 +83,7 @@ name = "axiom"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "axiom-core",
  "crossbeam-channel",
  "crossterm",
  "dirs",
@@ -97,6 +98,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syntect",
+ "tempfile",
  "thiserror 2.0.17",
  "tokio",
  "toml",

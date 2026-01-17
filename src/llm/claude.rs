@@ -197,3 +197,60 @@ fn send_claude_request(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_claude_provider_new() {
+        let provider = ClaudeProvider::new("test-api-key", "claude-3-sonnet");
+        assert_eq!(provider.id(), "claude");
+        assert_eq!(provider.name(), "Claude");
+        assert_eq!(provider.model(), "claude-3-sonnet");
+    }
+
+    #[test]
+    fn test_claude_api_key_required() {
+        let provider_with_key = ClaudeProvider::new("valid-key", "claude-3-sonnet");
+        assert!(provider_with_key.status().is_ready());
+
+        let provider_no_key = ClaudeProvider::new("", "claude-3-sonnet");
+        assert!(!provider_no_key.status().is_ready());
+        assert!(matches!(provider_no_key.status(), ProviderStatus::Unavailable(_)));
+    }
+
+    #[test]
+    fn test_claude_set_model() {
+        let provider = ClaudeProvider::new("key", "claude-3-sonnet");
+        assert!(provider.set_model("claude-3-opus").is_ok());
+        assert_eq!(provider.model(), "claude-3-opus");
+    }
+
+    #[test]
+    fn test_claude_list_models() {
+        let provider = ClaudeProvider::new("key", "claude-3-sonnet");
+        let models = provider.list_models().unwrap();
+        assert!(!models.is_empty());
+        assert!(models.iter().any(|m| m.contains("claude")));
+    }
+
+    #[test]
+    fn test_claude_capabilities() {
+        let provider = ClaudeProvider::new("key", "claude-3-sonnet");
+        let caps = provider.capabilities();
+        assert!(caps.streaming);
+        assert!(caps.function_calling);
+        assert!(caps.vision);
+        assert!(caps.file_context);
+        assert_eq!(caps.max_context, 200_000);
+        assert_eq!(caps.max_output, 8192);
+    }
+
+    #[test]
+    fn test_claude_with_base_url() {
+        let provider = ClaudeProvider::new("key", "model")
+            .with_base_url("https://proxy.example.com");
+        assert_eq!(provider.base_url, "https://proxy.example.com");
+    }
+}

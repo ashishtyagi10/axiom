@@ -1,11 +1,12 @@
 //! Main render function
 
 use super::layout::get_layout_with_focus;
+use super::theme::theme;
 use crate::panels::{Panel, PanelRegistry};
 use crate::state::{AppState, PanelId};
 use ratatui::{
     layout::Rect,
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
@@ -14,6 +15,13 @@ use ratatui::{
 /// Render the entire application
 pub fn render(frame: &mut Frame, state: &AppState, panels: &mut PanelRegistry) {
     let area = frame.area();
+
+    // Workspace selection phase: full-screen selector only
+    if state.active_workspace_id.is_none() {
+        panels.workspace_selector.render(frame, area);
+        return; // Don't render main UI until workspace is selected
+    }
+
     let focused = state.focus.current();
 
     // Get layout with focus-aware sizing
@@ -46,6 +54,11 @@ pub fn render(frame: &mut Frame, state: &AppState, panels: &mut PanelRegistry) {
     if state.input_mode.is_modal_open("settings") {
         panels.settings.render(frame, area);
     }
+
+    // Render workspace selector modal if open
+    if state.input_mode.is_modal_open("workspace_selector") {
+        panels.workspace_selector.render(frame, area);
+    }
 }
 
 /// Render the status bar, returns the model badge area for click detection
@@ -58,6 +71,10 @@ fn render_status_bar(
     let focused = state.focus.current();
     let mode = format!(" {} ", state.input_mode_name());
     let focus = format!(" {} ", panel_name(focused));
+
+    // Workspace name badge
+    let workspace_name = state.workspace_name();
+    let workspace_badge = format!(" 📁 {} ", workspace_name);
 
     // Get running agents count
     let registry = panels.agent_registry.read();
@@ -80,7 +97,7 @@ fn render_status_bar(
     };
 
     // Calculate model badge position for click detection
-    let prefix_len = mode.len() + 1 + focus.len() + 1;
+    let prefix_len = mode.len() + 1 + focus.len() + 1 + workspace_badge.len() + 1;
     let model_badge_area = Rect::new(
         area.x + prefix_len as u16,
         area.y,
@@ -88,29 +105,35 @@ fn render_status_bar(
         1,
     );
 
-    // Build status line
+    // Build status line with theme colors
+    let t = theme();
     let spans = vec![
-        Span::styled(mode, Style::default().bg(Color::Blue).fg(Color::White)),
+        Span::styled(mode, Style::default().bg(t.statusbar_mode_bg).fg(t.statusbar_mode_fg)),
         Span::raw(" "),
         Span::styled(
             focus,
-            Style::default().bg(Color::DarkGray).fg(Color::White),
+            Style::default().bg(t.statusbar_focus_bg).fg(t.statusbar_focus_fg),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            workspace_badge,
+            Style::default().bg(t.statusbar_workspace_bg).fg(t.statusbar_workspace_fg),
         ),
         Span::raw(" "),
         Span::styled(
             agents_badge,
-            Style::default().bg(Color::Magenta).fg(Color::White),
+            Style::default().bg(t.statusbar_agents_bg).fg(t.statusbar_agents_fg),
         ),
         Span::raw(" "),
-        Span::styled(status_text, Style::default().fg(Color::Gray)),
+        Span::styled(status_text, Style::default().fg(t.text_secondary)),
         Span::raw("  "),
         Span::styled(
-            " !cmd: Shell  Tab: Switch  q: Quit ",
-            Style::default().fg(Color::DarkGray),
+            " Ctrl+T: Theme  Ctrl+W: Workspaces  q: Quit ",
+            Style::default().fg(t.text_muted),
         ),
     ];
 
-    let status = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Black));
+    let status = Paragraph::new(Line::from(spans)).style(Style::default().bg(t.statusbar_bg));
 
     frame.render_widget(status, area);
 

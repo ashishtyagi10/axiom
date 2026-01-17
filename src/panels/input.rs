@@ -11,11 +11,12 @@ use crate::core::Result;
 use crate::events::Event;
 use crate::panels::Panel;
 use crate::state::{AppState, PanelId};
+use crate::ui::theme::theme;
 use crossbeam_channel::Sender;
 use crossterm::event::{KeyCode, KeyModifiers, MouseEventKind};
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Frame,
@@ -417,13 +418,14 @@ impl InputPanel {
 
     /// Get the prompt prefix based on input
     fn prompt(&self) -> (&'static str, Style) {
+        let t = theme();
         let trimmed = self.input.trim_start();
         if trimmed.starts_with('!') || trimmed.starts_with(':') {
-            ("$ ", Style::default().fg(Color::Yellow))
+            ("$ ", Style::default().fg(t.accent_highlight))
         } else if trimmed.starts_with('#') {
-            ("# ", Style::default().fg(Color::Magenta))
+            ("# ", Style::default().fg(t.accent_secondary))
         } else {
-            ("> ", Style::default().fg(Color::Cyan))
+            ("> ", Style::default().fg(t.accent_primary))
         }
     }
 }
@@ -572,10 +574,11 @@ impl Panel for InputPanel {
     fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
         *self.input_area.borrow_mut() = area;
 
+        let t = theme();
         let border_style = if focused {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(t.border_focused)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(t.border_unfocused)
         };
 
         // Compact title - show processing state or just prompt indicator
@@ -609,9 +612,9 @@ impl Panel for InputPanel {
                 .unwrap_or(false);
 
             let style = if is_selected {
-                Style::default().bg(Color::Blue).fg(Color::White)
+                Style::default().bg(t.bg_selection).fg(t.text_primary)
             } else {
-                Style::default()
+                Style::default().fg(t.text_primary)
             };
 
             spans.push(Span::styled(c.to_string(), style));
@@ -631,7 +634,7 @@ impl Panel for InputPanel {
                 spans.push(Span::styled(
                     "_",
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(t.accent_primary)
                         .add_modifier(Modifier::SLOW_BLINK),
                 ));
             }
@@ -640,5 +643,165 @@ impl Panel for InputPanel {
         let input_line = Line::from(spans);
         let paragraph = Paragraph::new(input_line);
         frame.render_widget(paragraph, inner);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== Chat Commands ====================
+
+    #[test]
+    fn test_parse_chat_command() {
+        let cmd = InputCommand::parse_simple("hello world");
+        assert!(matches!(cmd, InputCommand::Chat(text) if text == "hello world"));
+    }
+
+    #[test]
+    fn test_parse_chat_with_whitespace() {
+        let cmd = InputCommand::parse_simple("  hello world  ");
+        assert!(matches!(cmd, InputCommand::Chat(text) if text == "hello world"));
+    }
+
+    #[test]
+    fn test_parse_empty_input() {
+        let cmd = InputCommand::parse_simple("");
+        assert!(matches!(cmd, InputCommand::Empty));
+
+        let cmd = InputCommand::parse_simple("   ");
+        assert!(matches!(cmd, InputCommand::Empty));
+
+        let cmd = InputCommand::parse_simple("\t\n");
+        assert!(matches!(cmd, InputCommand::Empty));
+    }
+
+    // ==================== Shell Commands ====================
+
+    #[test]
+    fn test_parse_shell_bang_prefix() {
+        let cmd = InputCommand::parse_simple("!ls -la");
+        assert!(matches!(cmd, InputCommand::Shell(text) if text == "ls -la"));
+    }
+
+    #[test]
+    fn test_parse_shell_colon_prefix() {
+        let cmd = InputCommand::parse_simple(":git status");
+        assert!(matches!(cmd, InputCommand::Shell(text) if text == "git status"));
+    }
+
+    #[test]
+    fn test_parse_shell_empty_command() {
+        let cmd = InputCommand::parse_simple("!");
+        assert!(matches!(cmd, InputCommand::Shell(text) if text.is_empty()));
+
+        let cmd = InputCommand::parse_simple(":");
+        assert!(matches!(cmd, InputCommand::Shell(text) if text.is_empty()));
+    }
+
+    // ==================== CLI Agent Commands ====================
+
+    #[test]
+    fn test_parse_cli_agent_valid() {
+        let config = CliAgentsConfig::default();
+        let cmd = InputCommand::parse("#claude explain this code", Some(&config));
+        match cmd {
+            InputCommand::CliAgent { agent_id, prompt } => {
+                assert_eq!(agent_id, "claude");
+                assert_eq!(prompt, "explain this code");
+            }
+            _ => panic!("Expected CliAgent command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_cli_agent_unknown_id() {
+        let config = CliAgentsConfig::default();
+        // Unknown agent falls through to chat
+        let cmd = InputCommand::parse("#unknownagent do something", Some(&config));
+        assert!(matches!(cmd, InputCommand::Chat(text) if text == "#unknownagent do something"));
+    }
+
+    #[test]
+    fn test_parse_cli_agent_no_prompt() {
+        let config = CliAgentsConfig::default();
+        let cmd = InputCommand::parse("#claude", Some(&config));
+        match cmd {
+            InputCommand::CliAgent { agent_id, prompt } => {
+                assert_eq!(agent_id, "claude");
+                assert!(prompt.is_empty());
+            }
+            _ => panic!("Expected CliAgent command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_cli_agent_disabled() {
+        let mut config = CliAgentsConfig::default();
+        config.agents.get_mut("claude").unwrap().enabled = false;
+
+        // Disabled agent falls through to chat
+        let cmd = InputCommand::parse("#claude help me", Some(&config));
+        assert!(matches!(cmd, InputCommand::Chat(_)));
+    }
+
+    #[test]
+    fn test_parse_cli_agent_no_config() {
+        // Without config validation, any agent ID is accepted
+        let cmd = InputCommand::parse("#anyagent do stuff", None);
+        match cmd {
+            InputCommand::CliAgent { agent_id, prompt } => {
+                assert_eq!(agent_id, "anyagent");
+                assert_eq!(prompt, "do stuff");
+            }
+            _ => panic!("Expected CliAgent command"),
+        }
+    }
+
+    // ==================== Edge Cases ====================
+
+    #[test]
+    fn test_parse_special_characters() {
+        let cmd = InputCommand::parse_simple("!echo $HOME && ls");
+        assert!(matches!(cmd, InputCommand::Shell(text) if text == "echo $HOME && ls"));
+
+        let cmd = InputCommand::parse_simple("What's the meaning of \"life\"?");
+        assert!(matches!(cmd, InputCommand::Chat(text) if text.contains("meaning")));
+    }
+
+    #[test]
+    fn test_parse_command_with_hash_in_middle() {
+        // Hash not at start is treated as chat
+        let cmd = InputCommand::parse_simple("Tell me about #rust");
+        assert!(matches!(cmd, InputCommand::Chat(text) if text.contains("#rust")));
+    }
+
+    #[test]
+    fn test_parse_multiple_prefixes() {
+        // First prefix wins
+        let cmd = InputCommand::parse_simple("!:both");
+        assert!(matches!(cmd, InputCommand::Shell(text) if text == ":both"));
+
+        let cmd = InputCommand::parse_simple(":!both");
+        assert!(matches!(cmd, InputCommand::Shell(text) if text == "!both"));
+    }
+
+    // ==================== InputCommand Display ====================
+
+    #[test]
+    fn test_input_command_debug() {
+        let cmd = InputCommand::Chat("test".to_string());
+        let debug = format!("{:?}", cmd);
+        assert!(debug.contains("Chat"));
+    }
+
+    #[test]
+    fn test_input_command_clone() {
+        let cmd = InputCommand::CliAgent {
+            agent_id: "claude".to_string(),
+            prompt: "help".to_string(),
+        };
+        let cloned = cmd.clone();
+        assert!(matches!(cloned, InputCommand::CliAgent { agent_id, .. } if agent_id == "claude"));
     }
 }

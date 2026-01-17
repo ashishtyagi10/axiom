@@ -187,3 +187,107 @@ impl AxiomConfig {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_axiom_config_default() {
+        let config = AxiomConfig::default();
+        assert_eq!(config.llm.default_provider, "ollama");
+        assert_eq!(config.llm.timeout, 120);
+        assert_eq!(config.llm.max_retries, 3);
+    }
+
+    #[test]
+    fn test_get_provider_existing() {
+        let config = AxiomConfig::default();
+        let ollama = config.get_provider("ollama");
+        assert!(ollama.is_some());
+        let ollama = ollama.unwrap();
+        assert!(ollama.enabled);
+    }
+
+    #[test]
+    fn test_get_provider_nonexistent() {
+        let config = AxiomConfig::default();
+        assert!(config.get_provider("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_default_provider_config() {
+        let config = AxiomConfig::default();
+        let default = config.default_provider_config();
+        assert!(default.is_some());
+        // Default is ollama, which should exist
+    }
+
+    #[test]
+    fn test_enabled_providers_filtering() {
+        let mut config = AxiomConfig::default();
+        // By default, no providers have API keys, so enabled_providers should be empty
+        assert!(config.enabled_providers().is_empty());
+
+        // Add an API key to claude and enable it
+        if let Some(claude) = config.llm.providers.get_mut("claude") {
+            claude.enabled = true;
+            claude.api_key = Some("test-key".to_string());
+        }
+
+        let enabled = config.enabled_providers();
+        assert_eq!(enabled.len(), 1);
+        assert!(enabled.iter().any(|(name, _)| *name == "claude"));
+    }
+
+    #[test]
+    fn test_provider_config_default() {
+        let config = ProviderConfig::default();
+        assert!(config.enabled);
+        assert!(config.api_key.is_none());
+        assert!(config.base_url.is_none());
+        assert!(config.default_model.is_none());
+        assert!(config.models.is_empty());
+    }
+
+    #[test]
+    fn test_llm_config_default() {
+        let config = LlmConfig::default();
+        assert_eq!(config.default_provider, "ollama");
+        assert_eq!(config.timeout, 120);
+        assert_eq!(config.max_retries, 3);
+        assert!(!config.providers.is_empty());
+    }
+
+    #[test]
+    fn test_default_providers() {
+        let providers = default_providers();
+        assert!(providers.contains_key("ollama"));
+        assert!(providers.contains_key("claude"));
+        assert!(providers.contains_key("gemini"));
+        assert!(providers.contains_key("openai"));
+
+        // Ollama should be enabled by default
+        let ollama = providers.get("ollama").unwrap();
+        assert!(ollama.enabled);
+        assert_eq!(ollama.base_url, Some("http://localhost:11434".to_string()));
+
+        // Claude should be disabled by default (no API key)
+        let claude = providers.get("claude").unwrap();
+        assert!(!claude.enabled);
+    }
+
+    #[test]
+    fn test_provider_config_with_models() {
+        let providers = default_providers();
+        let claude = providers.get("claude").unwrap();
+        assert!(!claude.models.is_empty());
+        assert!(claude.models.iter().any(|m| m.contains("claude")));
+    }
+
+    #[test]
+    fn test_cli_agents_default() {
+        let config = AxiomConfig::default();
+        assert!(!config.cli_agents.agents.is_empty());
+    }
+}

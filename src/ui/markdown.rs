@@ -2,6 +2,7 @@
 //!
 //! Converts markdown to styled ratatui Lines.
 
+use crate::ui::theme::theme;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -92,17 +93,18 @@ impl MarkdownRenderer {
         let inner_width: usize = 76;
         let total_inner = inner_width + 2; // +2 for space padding on each side
 
-        // Style definitions
+        // Style definitions using theme
+        let t = theme();
         let border_style = Style::default()
-            .fg(Color::Rgb(80, 80, 90))
-            .bg(Color::Rgb(30, 34, 42));
+            .fg(t.code_border)
+            .bg(t.code_bg);
         let header_bg_style = Style::default()
-            .fg(Color::Rgb(180, 180, 80))
-            .bg(Color::Rgb(30, 34, 42))
+            .fg(t.accent_highlight)
+            .bg(t.code_bg)
             .add_modifier(Modifier::BOLD);
         let code_style = Style::default()
-            .fg(Color::Rgb(212, 212, 212))
-            .bg(Color::Rgb(30, 34, 42));
+            .fg(t.code_text)
+            .bg(t.code_bg);
 
         let lang_display = lang.as_deref().unwrap_or("code");
         let lang_with_spaces = format!(" {} ", lang_display);
@@ -249,12 +251,13 @@ impl MarkdownRenderer {
     /// - Header with "You ◆" signals user message
     /// - Content has right-side border (│) - opposite of Axiom's left border
     fn render_user_message_box(&mut self, text: &str) {
-        // Styles - blue theme for user
+        // Styles using theme - blue accent for user
+        let t = theme();
         let header_style = Style::default()
-            .fg(Color::Rgb(100, 160, 220))
+            .fg(t.accent_primary)
             .add_modifier(Modifier::BOLD);
-        let border_style = Style::default().fg(Color::Rgb(70, 100, 130));
-        let text_style = Style::default().fg(Color::Rgb(200, 210, 220));
+        let border_style = Style::default().fg(t.border_unfocused);
+        let text_style = Style::default().fg(t.text_primary);
 
         // Header: "You ◆" - diamond on right indicates user (opposite of Axiom)
         self.lines.push(Line::from(vec![

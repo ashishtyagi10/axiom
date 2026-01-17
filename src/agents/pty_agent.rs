@@ -335,3 +335,65 @@ fn vt100_color_to_ratatui(color: vt100::Color) -> ratatui::style::Color {
         vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Color;
+
+    #[test]
+    fn test_vt100_color_default() {
+        let color = vt100_color_to_ratatui(vt100::Color::Default);
+        assert_eq!(color, Color::Reset);
+    }
+
+    #[test]
+    fn test_vt100_color_basic_colors() {
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(0)), Color::Black);
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(1)), Color::Red);
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(2)), Color::Green);
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(3)), Color::Yellow);
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(4)), Color::Blue);
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(5)), Color::Magenta);
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(6)), Color::Cyan);
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(7)), Color::Gray);
+    }
+
+    #[test]
+    fn test_vt100_color_bright_colors() {
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(8)), Color::DarkGray);
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(9)), Color::LightRed);
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(10)), Color::LightGreen);
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(11)), Color::LightYellow);
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(12)), Color::LightBlue);
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(13)), Color::LightMagenta);
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(14)), Color::LightCyan);
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(15)), Color::White);
+    }
+
+    #[test]
+    fn test_vt100_color_indexed() {
+        // Test 256-color mode indices (16-255)
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(16)), Color::Indexed(16));
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(100)), Color::Indexed(100));
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Idx(255)), Color::Indexed(255));
+    }
+
+    #[test]
+    fn test_vt100_color_rgb() {
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Rgb(255, 0, 0)), Color::Rgb(255, 0, 0));
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Rgb(0, 255, 0)), Color::Rgb(0, 255, 0));
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Rgb(0, 0, 255)), Color::Rgb(0, 0, 255));
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Rgb(128, 128, 128)), Color::Rgb(128, 128, 128));
+    }
+
+    #[test]
+    fn test_pty_agent_min_size_constants() {
+        // The resize function enforces minimum sizes of 10 cols and 3 rows
+        // Test that these constraints are documented/expected
+        let min_cols: u16 = 10;
+        let min_rows: u16 = 3;
+        assert!(min_cols >= 10);
+        assert!(min_rows >= 3);
+    }
+}

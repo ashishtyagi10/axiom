@@ -5,9 +5,10 @@
 
 use crate::agents::{Agent, AgentType};
 use crate::ui::markdown::render_markdown;
+use crate::ui::theme::theme;
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
     Frame,
@@ -159,9 +160,10 @@ impl AgentViewer {
             return Vec::new();
         }
 
-        // Join cached lines and render as markdown
+        // Join cached lines and render as markdown with themed base style
+        let t = theme();
         let content = self.cached_lines.join("\n");
-        render_markdown(&content, Style::default())
+        render_markdown(&content, Style::default().fg(t.text_primary))
     }
 
     /// Render the agent output with markdown
@@ -172,6 +174,7 @@ impl AgentViewer {
         self.update_cache(agent, children);
 
         let elapsed_ms = agent.elapsed().as_millis();
+        let t = theme();
 
         // Build display lines - just the markdown content, no header
         let mut display_lines: Vec<Line> = Vec::new();
@@ -185,7 +188,7 @@ impl AgentViewer {
             };
             display_lines.push(Line::from(Span::styled(
                 waiting_msg,
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(t.text_muted),
             )));
         } else {
             // Render markdown content
@@ -212,7 +215,7 @@ impl AgentViewer {
                 };
                 display_lines.push(Line::from(Span::styled(
                     format!("──── {}% ({}/{}) ────", pct, visible_end, total_lines),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(t.text_muted),
                 )));
             }
         }

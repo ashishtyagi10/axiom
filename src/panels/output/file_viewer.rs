@@ -3,9 +3,10 @@
 //! Displays file content with syntax highlighting in read-only mode.
 
 use crate::panels::editor::Highlighter;
+use crate::ui::theme::theme;
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
@@ -120,10 +121,12 @@ impl FileViewer {
 
     /// Render the file content
     pub fn render(&self, frame: &mut Frame, area: Rect) {
+        let t = theme();
+
         if self.lines.is_empty() {
             let msg = Paragraph::new(Span::styled(
                 "Empty file",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(t.text_muted),
             ));
             frame.render_widget(msg, area);
             return;
@@ -139,7 +142,7 @@ impl FileViewer {
 
                 let mut spans = vec![Span::styled(
                     line_num,
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(t.text_secondary),
                 )];
 
                 // Add highlighted content

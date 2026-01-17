@@ -32,8 +32,8 @@ use crate::config::{AxiomConfig, CliAgentsConfig};
 use crate::core::Result;
 use crate::events::Event;
 use crate::llm::ProviderRegistry;
-use crate::state::{AppState, OutputContext, PanelId};
-use crate::ui::{ModelSelector, SettingsModal};
+use crate::state::{AppState, OutputContext, PanelId, WorkspaceId, WorkspaceView};
+use crate::ui::{ModelSelector, SettingsModal, WorkspaceSelectorModal};
 use parking_lot::RwLock;
 use ratatui::layout::Rect;
 use ratatui::Frame;
@@ -99,6 +99,9 @@ pub struct PanelRegistry {
     /// Settings modal
     pub settings: SettingsModal,
 
+    /// Workspace selector modal
+    pub workspace_selector: WorkspaceSelectorModal,
+
     /// Cached model badge area for click detection
     pub model_badge_area: Option<Rect>,
 
@@ -126,9 +129,15 @@ impl PanelRegistry {
             agent_registry,
             model_selector: ModelSelector::new(),
             settings: SettingsModal::new(config),
+            workspace_selector: WorkspaceSelectorModal::new(),
             model_badge_area: None,
             llm_registry,
         })
+    }
+
+    /// Open the workspace selector modal with workspace list
+    pub fn open_workspace_selector(&mut self, workspaces: Vec<WorkspaceView>, active_id: Option<WorkspaceId>) {
+        self.workspace_selector.set_workspaces(workspaces, active_id);
     }
 
     /// Get the agent registry
@@ -254,5 +263,19 @@ impl PanelRegistry {
         // Recompute layout with new focus and notify panels of size changes
         let layout = crate::ui::get_layout_with_focus(area, Some(new_focus));
         self.notify_resize_all(&layout);
+    }
+
+    /// Handle workspace switch - update panels to reflect new workspace
+    pub fn handle_workspace_switch(&mut self, workspace_path: &std::path::Path) {
+        // Update file tree to show new workspace root
+        self.file_tree.set_root(workspace_path);
+
+        // Clear output context (no file selected in new workspace)
+        self.set_output_context(OutputContext::Empty);
+    }
+
+    /// Update the CLI agents configuration (used when switching workspaces with different configs)
+    pub fn update_cli_agents(&mut self, cli_agents: CliAgentsConfig) {
+        self.input.set_cli_agents(Arc::new(cli_agents));
     }
 }

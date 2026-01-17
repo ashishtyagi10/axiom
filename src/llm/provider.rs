@@ -92,3 +92,67 @@ pub trait LlmProvider: Send + Sync {
 
 /// Wrapper to make Box<dyn LlmProvider> cloneable via Arc
 pub type SharedProvider = std::sync::Arc<dyn LlmProvider>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_provider_capabilities_default() {
+        let caps = ProviderCapabilities::default();
+        assert!(!caps.streaming);
+        assert!(!caps.function_calling);
+        assert!(!caps.vision);
+        assert!(!caps.file_context);
+        assert_eq!(caps.max_context, 0);
+        assert_eq!(caps.max_output, 0);
+    }
+
+    #[test]
+    fn test_provider_capabilities_custom() {
+        let caps = ProviderCapabilities {
+            streaming: true,
+            function_calling: true,
+            vision: false,
+            file_context: true,
+            max_context: 100_000,
+            max_output: 4096,
+        };
+        assert!(caps.streaming);
+        assert!(caps.function_calling);
+        assert_eq!(caps.max_context, 100_000);
+    }
+
+    #[test]
+    fn test_provider_status_ready() {
+        let status = ProviderStatus::Ready;
+        assert!(status.is_ready());
+    }
+
+    #[test]
+    fn test_provider_status_busy() {
+        let status = ProviderStatus::Busy;
+        assert!(!status.is_ready());
+    }
+
+    #[test]
+    fn test_provider_status_unavailable() {
+        let status = ProviderStatus::Unavailable("No API key".to_string());
+        assert!(!status.is_ready());
+        assert!(matches!(status, ProviderStatus::Unavailable(msg) if msg == "No API key"));
+    }
+
+    #[test]
+    fn test_provider_status_rate_limited() {
+        let status = ProviderStatus::RateLimited;
+        assert!(!status.is_ready());
+    }
+
+    #[test]
+    fn test_provider_status_equality() {
+        assert_eq!(ProviderStatus::Ready, ProviderStatus::Ready);
+        assert_eq!(ProviderStatus::Busy, ProviderStatus::Busy);
+        assert_eq!(ProviderStatus::RateLimited, ProviderStatus::RateLimited);
+        assert_ne!(ProviderStatus::Ready, ProviderStatus::Busy);
+    }
+}

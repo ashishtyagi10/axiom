@@ -209,3 +209,60 @@ fn send_gemini_request(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_gemini_provider_new() {
+        let provider = GeminiProvider::new("test-api-key", "gemini-1.5-pro");
+        assert_eq!(provider.id(), "gemini");
+        assert_eq!(provider.name(), "Gemini");
+        assert_eq!(provider.model(), "gemini-1.5-pro");
+    }
+
+    #[test]
+    fn test_gemini_api_key_required() {
+        let provider_with_key = GeminiProvider::new("valid-key", "gemini-1.5-pro");
+        assert!(provider_with_key.status().is_ready());
+
+        let provider_no_key = GeminiProvider::new("", "gemini-1.5-pro");
+        assert!(!provider_no_key.status().is_ready());
+        assert!(matches!(provider_no_key.status(), ProviderStatus::Unavailable(_)));
+    }
+
+    #[test]
+    fn test_gemini_set_model() {
+        let provider = GeminiProvider::new("key", "gemini-1.5-pro");
+        assert!(provider.set_model("gemini-1.5-flash").is_ok());
+        assert_eq!(provider.model(), "gemini-1.5-flash");
+    }
+
+    #[test]
+    fn test_gemini_list_models() {
+        let provider = GeminiProvider::new("key", "gemini-1.5-pro");
+        let models = provider.list_models().unwrap();
+        assert!(!models.is_empty());
+        assert!(models.iter().any(|m| m.contains("gemini")));
+    }
+
+    #[test]
+    fn test_gemini_capabilities() {
+        let provider = GeminiProvider::new("key", "gemini-1.5-pro");
+        let caps = provider.capabilities();
+        assert!(caps.streaming);
+        assert!(caps.function_calling);
+        assert!(caps.vision);
+        assert!(caps.file_context);
+        assert_eq!(caps.max_context, 1_000_000);
+        assert_eq!(caps.max_output, 8192);
+    }
+
+    #[test]
+    fn test_gemini_with_base_url() {
+        let provider = GeminiProvider::new("key", "model")
+            .with_base_url("https://proxy.example.com");
+        assert_eq!(provider.base_url, "https://proxy.example.com");
+    }
+}

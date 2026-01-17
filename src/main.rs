@@ -1,6 +1,13 @@
 //! Axiom - Terminal IDE with AI integration
 //!
 //! Entry point with proper terminal setup and cleanup.
+//!
+//! The application uses a two-mode launcher system:
+//! - **Launcher mode** (default): Spawns a new terminal window with the TUI
+//! - **TUI mode** (`AXIOM_TUI=1`): Runs the actual TUI application
+//!
+//! This allows `cargo run` to automatically open in a new terminal window,
+//! keeping the original terminal free.
 
 use axiom::{
     agents::{Conductor, Executor, PtyAgentManager},
@@ -8,9 +15,9 @@ use axiom::{
     core::Result,
     events::{Event, EventBus},
     llm::{ClaudeProvider, GeminiProvider, OllamaProvider, ProviderRegistry},
-    panels::{Panel, PanelRegistry},
-    state::{AppState, OutputContext, PanelId},
-    ui::{self, settings::SettingsAction},
+    panels::PanelRegistry,
+    state::{AppState, OutputContext, PanelId, WorkspaceId},
+    ui::{self, settings::SettingsAction, workspace_selector::WorkspaceSelectorAction, SelectorMode, toggle_theme, current_variant},
     watcher::FileWatcher,
 };
 use crossterm::{
@@ -20,15 +27,167 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Command-line arguments
+struct Args {
+    /// Directory path to open
+    path: Option<PathBuf>,
+    /// Workspace ID to open
+    workspace: Option<String>,
+}
+
+impl Args {
+    /// Parse command-line arguments
+    fn parse() -> Self {
+        let mut args = std::env::args().skip(1);
+        let mut path = None;
+        let mut workspace = None;
+
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--workspace" | "-w" => {
+                    workspace = args.next();
+                }
+                _ if !arg.starts_with('-') => {
+                    // Treat as path
+                    path = Some(PathBuf::from(arg));
+                }
+                _ => {
+                    // Ignore unknown flags
+                }
+            }
+        }
+
+        Self { path, workspace }
+    }
+}
+
 /// Application entry point.
+///
+/// Checks if we should run the TUI directly or spawn a new terminal window.
+/// - If `AXIOM_TUI=1` is set, runs the TUI in the current terminal.
+/// - Otherwise, spawns a new terminal window with the TUI.
+fn main() -> Result<()> {
+    // If AXIOM_TUI is set, run the actual TUI
+    if std::env::var("AXIOM_TUI").is_ok() {
+        return run_tui();
+    }
+
+    // Otherwise, spawn a new terminal with the TUI
+    spawn_in_new_terminal()
+}
+
+/// Spawns the TUI in a new terminal window.
+///
+/// Platform-specific implementations:
+/// - **macOS**: Uses `osascript` to open Terminal.app
+/// - **Linux**: Tries common terminal emulators (gnome-terminal, konsole, etc.)
+/// - **Windows**: Uses Windows Terminal or falls back to cmd.exe
+fn spawn_in_new_terminal() -> Result<()> {
+    let exe = std::env::current_exe()
+        .map_err(|e| axiom::core::AxiomError::Config(format!("Failed to get executable path: {}", e)))?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args_str = args.join(" ");
+
+    #[cfg(target_os = "macos")]
+    {
+        // Use osascript to open Terminal.app with the command
+        let script = format!(
+            r#"tell application "Terminal"
+                activate
+                do script "AXIOM_TUI=1 '{}' {}"
+            end tell"#,
+            exe.display(),
+            args_str
+        );
+        std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .spawn()
+            .map_err(|e| axiom::core::AxiomError::Config(format!("Failed to spawn terminal: {}", e)))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Try common terminal emulators in order
+        let terminals = ["gnome-terminal", "konsole", "xfce4-terminal", "xterm"];
+        let cmd = format!("AXIOM_TUI=1 '{}' {}", exe.display(), args_str);
+
+        for term in terminals {
+            let result = match term {
+                "gnome-terminal" => std::process::Command::new(term)
+                    .arg("--")
+                    .arg("sh")
+                    .arg("-c")
+                    .arg(&cmd)
+                    .spawn(),
+                "konsole" | "xfce4-terminal" => std::process::Command::new(term)
+                    .arg("-e")
+                    .arg("sh")
+                    .arg("-c")
+                    .arg(&cmd)
+                    .spawn(),
+                _ => std::process::Command::new(term)
+                    .arg("-e")
+                    .arg(&cmd)
+                    .spawn(),
+            };
+            if result.is_ok() {
+                return Ok(());
+            }
+        }
+        return Err(axiom::core::AxiomError::Config(
+            "No supported terminal emulator found".into(),
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // Use Windows Terminal if available, fall back to cmd
+        let cmd = format!("set AXIOM_TUI=1 && \"{}\" {}", exe.display(), args_str);
+
+        // Try Windows Terminal first
+        if std::process::Command::new("wt")
+            .arg("cmd")
+            .arg("/c")
+            .arg(&cmd)
+            .spawn()
+            .is_err()
+        {
+            // Fall back to cmd.exe
+            std::process::Command::new("cmd")
+                .arg("/c")
+                .arg("start")
+                .arg("cmd")
+                .arg("/c")
+                .arg(&cmd)
+                .spawn()
+                .map_err(|e| axiom::core::AxiomError::Config(format!("Failed to spawn terminal: {}", e)))?;
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        return Err(axiom::core::AxiomError::Config(
+            "Unsupported platform for auto-launch. Use AXIOM_TUI=1 to run directly.".into(),
+        ));
+    }
+}
+
+/// Runs the TUI application.
 ///
 /// Sets up the terminal in raw mode, initializes the TUI backend,
 /// runs the application loop, and ensures the terminal is restored
 /// to its original state upon exit or panic.
-fn main() -> Result<()> {
+fn run_tui() -> Result<()> {
+    // Parse command-line arguments
+    let args = Args::parse();
+
     // Setup terminal
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -37,7 +196,7 @@ fn main() -> Result<()> {
     let mut term = Terminal::new(backend)?;
 
     // Run app with panic recovery
-    let result = run_app(&mut term);
+    let result = run_app(&mut term, args);
 
     // Restore terminal (ALWAYS, even on error)
     terminal::disable_raw_mode()?;
@@ -61,21 +220,68 @@ fn main() -> Result<()> {
 /// Initializes the application state, event bus, panels, and file watcher.
 /// Handles the main event loop, rendering the UI and processing events
 /// until a quit signal is received.
-fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
+fn run_app<B: Backend>(terminal: &mut Terminal<B>, args: Args) -> Result<()> {
     // Initialize clipboard
     axiom::clipboard::init();
 
     // Create event bus with bounded channel
     let event_bus = EventBus::new(1024);
 
-    // Create application state
-    let mut state = AppState::new();
+    // Create application state with optional path from args
+    let mut state = if let Some(path) = args.path {
+        // Resolve to absolute path
+        let path = if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join(path)
+        };
+
+        // Verify path exists and is a directory
+        if path.is_dir() {
+            AppState::with_cwd(path)
+        } else {
+            eprintln!("Warning: {} is not a directory, using current directory", path.display());
+            AppState::new()
+        }
+    } else {
+        AppState::new()
+    };
 
     // Load configuration
     let config = load_config(&state.cwd).unwrap_or_else(|e| {
         eprintln!("Warning: Failed to load config: {}. Using defaults.", e);
         AxiomConfig::default()
     });
+
+    // Initialize workspace manager
+    if let Err(e) = state.init_workspace_manager(axiom_core::AxiomConfig::default()) {
+        eprintln!("Warning: Failed to initialize workspace manager: {}", e);
+    }
+
+    // If --workspace argument provided, try to switch to it
+    if let Some(workspace_id_str) = args.workspace {
+        if let Ok(ws_id) = workspace_id_str.parse::<WorkspaceId>() {
+            match state.switch_workspace(ws_id) {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("Warning: Failed to switch to workspace {}: {}", workspace_id_str, e);
+                }
+            }
+        } else {
+            eprintln!("Warning: Invalid workspace ID: {}", workspace_id_str);
+        }
+    } else if let Some(manager) = &state.workspace_manager {
+        // Try to find existing workspace for cwd or create/detect one
+        if state.active_workspace_id.is_none() {
+            // Check if there's an existing workspace for this path
+            if let Some(workspace) = manager.find_by_path(&state.cwd) {
+                state.active_workspace_id = Some(workspace.id);
+            }
+            // Note: We don't auto-create workspaces - user should explicitly create them
+        }
+    }
 
     // Create provider registry from config
     let llm_registry = create_provider_registry(&config);
@@ -115,6 +321,13 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
 
     // Track screen area for layout calculations
     let mut screen_area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+
+    // Initialize workspace selector with existing workspaces
+    // (it will be shown as main screen until a workspace is selected)
+    if let Some(manager) = &state.workspace_manager {
+        let workspaces = manager.list_workspaces();
+        panels.open_workspace_selector(workspaces, state.active_workspace_id);
+    }
 
     // Main event loop
     loop {
@@ -193,6 +406,94 @@ fn handle_event(
     executor: &Executor,
     pty_manager: &Arc<parking_lot::RwLock<PtyAgentManager>>,
 ) -> Result<bool> {
+    // Workspace selection phase: only handle workspace selector events and resize
+    if state.active_workspace_id.is_none() {
+        match event {
+            Event::Key(key) => {
+                let is_creating = panels.workspace_selector.mode == SelectorMode::CreateNew;
+                let is_browsing = panels.workspace_selector.mode == SelectorMode::BrowseFolders;
+
+                // Handle BrowseFolders mode
+                if is_browsing {
+                    match key.code {
+                        KeyCode::Esc => {
+                            panels.workspace_selector.cancel_browse();
+                            return Ok(false);
+                        }
+                        KeyCode::Up => {
+                            panels.workspace_selector.up();
+                            return Ok(false);
+                        }
+                        KeyCode::Down => {
+                            panels.workspace_selector.down();
+                            return Ok(false);
+                        }
+                        KeyCode::Enter => {
+                            panels.workspace_selector.folder_enter();
+                            return Ok(false);
+                        }
+                        KeyCode::Backspace => {
+                            panels.workspace_selector.folder_parent();
+                            return Ok(false);
+                        }
+                        _ => return Ok(false),
+                    }
+                }
+
+                match key.code {
+                    // No Esc to dismiss - must select a workspace
+                    KeyCode::Up => {
+                        panels.workspace_selector.up();
+                    }
+                    KeyCode::Down => {
+                        panels.workspace_selector.down();
+                    }
+                    KeyCode::Tab if is_creating => {
+                        panels.workspace_selector.down(); // Tab switches fields in create mode
+                    }
+                    // Ctrl+B in CreateNew mode: open folder browser
+                    KeyCode::Char('b') if is_creating && key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        panels.workspace_selector.start_folder_browse();
+                    }
+                    KeyCode::Enter => {
+                        let action = panels.workspace_selector.enter();
+                        handle_workspace_selector_action_initial(action, state, panels, pty_manager);
+                    }
+                    KeyCode::Delete => {
+                        panels.workspace_selector.delete();
+                    }
+                    KeyCode::Char('y') if panels.workspace_selector.mode == SelectorMode::ConfirmDelete => {
+                        let action = panels.workspace_selector.confirm();
+                        handle_workspace_selector_action_initial(action, state, panels, pty_manager);
+                    }
+                    KeyCode::Char('n') if panels.workspace_selector.mode == SelectorMode::ConfirmDelete => {
+                        panels.workspace_selector.deny();
+                    }
+                    KeyCode::Char(c) if is_creating => {
+                        panels.workspace_selector.insert_char(c);
+                    }
+                    KeyCode::Backspace if is_creating => {
+                        panels.workspace_selector.backspace();
+                    }
+                    KeyCode::Left if is_creating => {
+                        panels.workspace_selector.cursor_left();
+                    }
+                    KeyCode::Right if is_creating => {
+                        panels.workspace_selector.cursor_right();
+                    }
+                    _ => {}
+                }
+                return Ok(false);
+            }
+            Event::Resize(w, h) => {
+                // Handle resize during workspace selection
+                let _ = (w, h); // Layout will be recalculated on next render
+                return Ok(false);
+            }
+            _ => return Ok(false), // Ignore all other events during workspace selection
+        }
+    }
+
     match event {
         // Global key bindings (checked first)
         Event::Key(key) => {
@@ -291,6 +592,101 @@ fn handle_event(
                 }
             }
 
+            // Handle workspace selector modal
+            if state.input_mode.is_modal_open("workspace_selector") {
+                let is_creating = panels.workspace_selector.mode == SelectorMode::CreateNew;
+                let is_browsing = panels.workspace_selector.mode == SelectorMode::BrowseFolders;
+
+                // Handle BrowseFolders mode
+                if is_browsing {
+                    match key.code {
+                        KeyCode::Esc => {
+                            panels.workspace_selector.cancel_browse();
+                            return Ok(false);
+                        }
+                        KeyCode::Up => {
+                            panels.workspace_selector.up();
+                            return Ok(false);
+                        }
+                        KeyCode::Down => {
+                            panels.workspace_selector.down();
+                            return Ok(false);
+                        }
+                        KeyCode::Enter => {
+                            panels.workspace_selector.folder_enter();
+                            return Ok(false);
+                        }
+                        KeyCode::Backspace => {
+                            panels.workspace_selector.folder_parent();
+                            return Ok(false);
+                        }
+                        _ => return Ok(false),
+                    }
+                }
+
+                match key.code {
+                    KeyCode::Esc => {
+                        let action = panels.workspace_selector.escape();
+                        if action == WorkspaceSelectorAction::Cancel {
+                            state.input_mode.to_normal();
+                        }
+                        return Ok(false);
+                    }
+                    KeyCode::Up => {
+                        panels.workspace_selector.up();
+                        return Ok(false);
+                    }
+                    KeyCode::Down => {
+                        panels.workspace_selector.down();
+                        return Ok(false);
+                    }
+                    KeyCode::Tab if is_creating => {
+                        panels.workspace_selector.down(); // Tab switches fields in create mode
+                        return Ok(false);
+                    }
+                    // Ctrl+B in CreateNew mode: open folder browser
+                    KeyCode::Char('b') if is_creating && key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        panels.workspace_selector.start_folder_browse();
+                        return Ok(false);
+                    }
+                    KeyCode::Enter => {
+                        let action = panels.workspace_selector.enter();
+                        handle_workspace_selector_action(action, state, panels, pty_manager);
+                        return Ok(false);
+                    }
+                    KeyCode::Delete => {
+                        panels.workspace_selector.delete();
+                        return Ok(false);
+                    }
+                    KeyCode::Char('y') if panels.workspace_selector.mode == SelectorMode::ConfirmDelete => {
+                        let action = panels.workspace_selector.confirm();
+                        handle_workspace_selector_action(action, state, panels, pty_manager);
+                        return Ok(false);
+                    }
+                    KeyCode::Char('n') if panels.workspace_selector.mode == SelectorMode::ConfirmDelete => {
+                        panels.workspace_selector.deny();
+                        return Ok(false);
+                    }
+                    KeyCode::Char(c) if is_creating => {
+                        panels.workspace_selector.insert_char(c);
+                        return Ok(false);
+                    }
+                    KeyCode::Backspace if is_creating => {
+                        panels.workspace_selector.backspace();
+                        return Ok(false);
+                    }
+                    KeyCode::Left if is_creating => {
+                        panels.workspace_selector.cursor_left();
+                        return Ok(false);
+                    }
+                    KeyCode::Right if is_creating => {
+                        panels.workspace_selector.cursor_right();
+                        return Ok(false);
+                    }
+                    _ => return Ok(false),
+                }
+            }
+
             // 'q' in Normal mode: Quit (vim-style, avoids Ctrl+Q terminal conflict)
             if key.code == KeyCode::Char('q') && !state.input_mode.is_editing() && !state.input_mode.is_modal() {
                 state.quit();
@@ -308,6 +704,25 @@ fn handle_event(
             if key.code == KeyCode::Char(',') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 panels.open_settings(config);
                 state.input_mode.open_modal("settings");
+                return Ok(false);
+            }
+
+            // Ctrl+T: Toggle theme
+            if key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                toggle_theme();
+                state.info(format!("Theme: {}", current_variant().as_str()));
+                return Ok(false);
+            }
+
+            // Ctrl+W: Open workspace selector
+            if key.code == KeyCode::Char('w') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                if let Some(manager) = &state.workspace_manager {
+                    let workspaces = manager.list_workspaces();
+                    panels.open_workspace_selector(workspaces, state.active_workspace_id);
+                    state.input_mode.open_modal("workspace_selector");
+                } else {
+                    state.error("Workspace manager not initialized");
+                }
                 return Ok(false);
             }
 
@@ -757,11 +1172,272 @@ fn handle_event(
         // Tick - could be used for animations
         Event::Tick => {}
 
+        // ===== Workspace Events =====
+
+        Event::WorkspaceSwitch(id) => {
+            // Attempt to switch workspace
+            match state.switch_workspace(*id) {
+                Ok(new_path) => {
+                    // Cancel all running agents before switching
+                    cancel_all_agents(panels, pty_manager);
+
+                    // Update panels
+                    panels.handle_workspace_switch(&new_path);
+
+                    // Reload workspace-specific config if available
+                    if let Some(manager) = &state.workspace_manager {
+                        if let Ok(ws_config) = manager.get_workspace_config(*id) {
+                            // Merge workspace CLI agents with global config
+                            // For now, we just use global config
+                            let _ = ws_config;
+                        }
+                    }
+
+                    state.info(format!("Switched to: {}", state.workspace_name()));
+                }
+                Err(e) => {
+                    state.error(format!("Failed to switch workspace: {}", e));
+                }
+            }
+        }
+
+        Event::WorkspaceCreate { ref name, ref path } => {
+            if let Some(manager) = &state.workspace_manager {
+                match manager.create_workspace(name, path.clone()) {
+                    Ok(workspace) => {
+                        state.info(format!("Created workspace: {}", workspace.name));
+                        // Optionally switch to the new workspace
+                        let _ = state.switch_workspace(workspace.id);
+                        panels.handle_workspace_switch(&workspace.path);
+                    }
+                    Err(e) => {
+                        state.error(format!("Failed to create workspace: {}", e));
+                    }
+                }
+            } else {
+                state.error("Workspace manager not initialized");
+            }
+        }
+
+        Event::WorkspaceDelete(id) => {
+            if let Some(manager) = &state.workspace_manager {
+                match manager.delete_workspace(*id) {
+                    Ok(Some(deleted)) => {
+                        state.info(format!("Deleted workspace: {}", deleted.name));
+                        // If we deleted the active workspace, clear the active ID
+                        if state.active_workspace_id == Some(*id) {
+                            state.active_workspace_id = None;
+                        }
+                    }
+                    Ok(None) => {
+                        state.error("Workspace not found");
+                    }
+                    Err(e) => {
+                        state.error(format!("Failed to delete workspace: {}", e));
+                    }
+                }
+            } else {
+                state.error("Workspace manager not initialized");
+            }
+        }
+
+        Event::WorkspaceSwitched { id: _, ref path } => {
+            // Notification that workspace was switched (from another source)
+            panels.handle_workspace_switch(path);
+        }
+
         // Other events
         _ => {}
     }
 
     Ok(false)
+}
+
+/// Handle workspace selector action
+fn handle_workspace_selector_action(
+    action: WorkspaceSelectorAction,
+    state: &mut AppState,
+    panels: &mut PanelRegistry,
+    pty_manager: &Arc<parking_lot::RwLock<PtyAgentManager>>,
+) {
+    match action {
+        WorkspaceSelectorAction::Select(id) => {
+            // Switch to selected workspace
+            match state.switch_workspace(id) {
+                Ok(new_path) => {
+                    cancel_all_agents(panels, pty_manager);
+                    panels.handle_workspace_switch(&new_path);
+                    state.info(format!("Switched to: {}", state.workspace_name()));
+                }
+                Err(e) => {
+                    state.error(format!("Failed to switch: {}", e));
+                }
+            }
+            state.input_mode.to_normal();
+        }
+        WorkspaceSelectorAction::Create { name, path } => {
+            if let Some(manager) = &state.workspace_manager {
+                match manager.create_workspace(&name, path.clone()) {
+                    Ok(workspace) => {
+                        state.info(format!("Created: {}", workspace.name));
+                        // Switch to the new workspace
+                        if let Ok(_) = state.switch_workspace(workspace.id) {
+                            cancel_all_agents(panels, pty_manager);
+                            panels.handle_workspace_switch(&workspace.path);
+                        }
+                    }
+                    Err(e) => {
+                        state.error(format!("Failed to create: {}", e));
+                    }
+                }
+            }
+            state.input_mode.to_normal();
+        }
+        WorkspaceSelectorAction::Delete(id) => {
+            // Use a separate scope for the manager borrow
+            let delete_result = state.workspace_manager.as_ref()
+                .map(|manager| manager.delete_workspace(id));
+
+            match delete_result {
+                Some(Ok(Some(deleted))) => {
+                    let deleted_name = deleted.name.clone();
+                    state.info(format!("Deleted: {}", deleted_name));
+                    if state.active_workspace_id == Some(id) {
+                        state.active_workspace_id = None;
+                    }
+                    // Refresh the workspace list in the selector
+                    if let Some(manager) = &state.workspace_manager {
+                        let workspaces = manager.list_workspaces();
+                        panels.open_workspace_selector(workspaces, state.active_workspace_id);
+                    }
+                }
+                Some(Ok(None)) => {
+                    state.error("Workspace not found");
+                }
+                Some(Err(e)) => {
+                    state.error(format!("Failed to delete: {}", e));
+                }
+                None => {
+                    state.error("Workspace manager not initialized");
+                }
+            }
+        }
+        WorkspaceSelectorAction::Cancel => {
+            state.input_mode.to_normal();
+        }
+        WorkspaceSelectorAction::None => {
+            // No action needed
+        }
+    }
+}
+
+/// Handle workspace selector action during initial workspace selection phase
+/// (before any workspace is active - not a modal, the main screen)
+fn handle_workspace_selector_action_initial(
+    action: WorkspaceSelectorAction,
+    state: &mut AppState,
+    panels: &mut PanelRegistry,
+    pty_manager: &Arc<parking_lot::RwLock<PtyAgentManager>>,
+) {
+    match action {
+        WorkspaceSelectorAction::Select(id) => {
+            // Switch to selected workspace
+            match state.switch_workspace(id) {
+                Ok(new_path) => {
+                    cancel_all_agents(panels, pty_manager);
+                    panels.handle_workspace_switch(&new_path);
+                    state.info(format!("Opened: {}", state.workspace_name()));
+                }
+                Err(e) => {
+                    state.error(format!("Failed to open: {}", e));
+                }
+            }
+            // Don't close modal - workspace is now active, render.rs will show main UI
+        }
+        WorkspaceSelectorAction::Create { name, path } => {
+            if let Some(manager) = &state.workspace_manager {
+                match manager.create_workspace(&name, path.clone()) {
+                    Ok(workspace) => {
+                        state.info(format!("Created: {}", workspace.name));
+                        // Switch to the new workspace
+                        if let Ok(_) = state.switch_workspace(workspace.id) {
+                            cancel_all_agents(panels, pty_manager);
+                            panels.handle_workspace_switch(&workspace.path);
+                        }
+                    }
+                    Err(e) => {
+                        state.error(format!("Failed to create: {}", e));
+                    }
+                }
+            }
+            // Don't close modal - workspace is now active, render.rs will show main UI
+        }
+        WorkspaceSelectorAction::Delete(id) => {
+            // Use a separate scope for the manager borrow
+            let delete_result = state.workspace_manager.as_ref()
+                .map(|manager| manager.delete_workspace(id));
+
+            match delete_result {
+                Some(Ok(Some(deleted))) => {
+                    let deleted_name = deleted.name.clone();
+                    state.info(format!("Deleted: {}", deleted_name));
+                    // Refresh the workspace list in the selector
+                    if let Some(manager) = &state.workspace_manager {
+                        let workspaces = manager.list_workspaces();
+                        panels.open_workspace_selector(workspaces, state.active_workspace_id);
+                    }
+                }
+                Some(Ok(None)) => {
+                    state.error("Workspace not found");
+                }
+                Some(Err(e)) => {
+                    state.error(format!("Failed to delete: {}", e));
+                }
+                None => {
+                    state.error("Workspace manager not initialized");
+                }
+            }
+        }
+        WorkspaceSelectorAction::Cancel => {
+            // Cannot cancel during initial selection - must select a workspace
+            // Do nothing
+        }
+        WorkspaceSelectorAction::None => {
+            // No action needed
+        }
+    }
+}
+
+/// Cancel all running agents when switching workspaces
+fn cancel_all_agents(
+    panels: &mut PanelRegistry,
+    pty_manager: &Arc<parking_lot::RwLock<axiom::agents::PtyAgentManager>>,
+) {
+    // Get all running agent IDs
+    let running_ids: Vec<_> = {
+        let registry = panels.agent_registry.read();
+        registry
+            .agents()
+            .filter(|a| a.status == axiom::agents::AgentStatus::Running)
+            .map(|a| a.id)
+            .collect()
+    };
+
+    // Mark agents as cancelled in registry
+    {
+        let mut registry = panels.agent_registry.write();
+        for id in &running_ids {
+            registry.cancel(*id);
+        }
+    }
+
+    // Remove PTY sessions
+    {
+        let mut manager = pty_manager.write();
+        for id in running_ids {
+            manager.remove(id);
+        }
+    }
 }
 
 /// Spawns a dedicated thread to read input events (keyboard, mouse, resize).

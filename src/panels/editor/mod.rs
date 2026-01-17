@@ -1361,3 +1361,310 @@ impl super::Panel for EditorPanel {
         self.active_tab_mut().selection.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn test_editor_panel_new() {
+        let editor = EditorPanel::new();
+        assert!(editor.has_tabs());
+        assert_eq!(editor.tab_count(), 1);
+    }
+
+    #[test]
+    fn test_editor_panel_default() {
+        let editor = EditorPanel::default();
+        assert!(editor.has_tabs());
+    }
+
+    #[test]
+    fn test_file_tab_new() {
+        let tab = FileTab::new();
+        assert!(tab.file_path.is_none());
+        assert_eq!(tab.lines.len(), 1);
+        assert!(tab.lines[0].is_empty());
+        assert!(!tab.modified);
+        assert_eq!(tab.cursor, (0, 0));
+    }
+
+    #[test]
+    fn test_file_tab_new_file() {
+        let tab = FileTab::new_file(PathBuf::from("/tmp/test.rs"));
+        assert_eq!(tab.file_path, Some(PathBuf::from("/tmp/test.rs")));
+        assert!(tab.modified);
+    }
+
+    #[test]
+    fn test_file_tab_display_name() {
+        let mut tab = FileTab::new();
+        assert_eq!(tab.display_name(), "[New]");
+
+        tab.file_path = Some(PathBuf::from("/path/to/file.rs"));
+        assert_eq!(tab.display_name(), "file.rs");
+    }
+
+    #[test]
+    fn test_file_tab_current_line() {
+        let mut tab = FileTab::new();
+        tab.lines = vec!["hello".to_string(), "world".to_string()];
+
+        tab.cursor = (0, 0);
+        assert_eq!(tab.current_line(), "hello");
+
+        tab.cursor = (1, 0);
+        assert_eq!(tab.current_line(), "world");
+    }
+
+    #[test]
+    fn test_editor_open_file() {
+        let mut editor = EditorPanel::new();
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join("axiom_test_editor.txt");
+
+        // Create a temp file
+        {
+            let mut f = std::fs::File::create(&temp_file).unwrap();
+            writeln!(f, "line 1").unwrap();
+            writeln!(f, "line 2").unwrap();
+        }
+
+        // Open the file
+        assert!(editor.open(&temp_file).is_ok());
+        assert!(editor.has_file_open(&temp_file));
+        assert_eq!(editor.active_tab().lines.len(), 2);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_editor_open_same_file_twice() {
+        let mut editor = EditorPanel::new();
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join("axiom_test_editor2.txt");
+
+        {
+            let mut f = std::fs::File::create(&temp_file).unwrap();
+            writeln!(f, "content").unwrap();
+        }
+
+        assert!(editor.open(&temp_file).is_ok());
+        let first_tab_count = editor.tab_count();
+
+        // Opening same file shouldn't create new tab
+        assert!(editor.open(&temp_file).is_ok());
+        assert_eq!(editor.tab_count(), first_tab_count);
+
+        let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_editor_set_new_file() {
+        let mut editor = EditorPanel::new();
+        let path = PathBuf::from("/tmp/new_file.rs");
+
+        editor.set_new_file(&path);
+        assert!(editor.has_file_open(&path));
+        assert!(editor.active_tab().modified);
+    }
+
+    #[test]
+    fn test_editor_tab_navigation() {
+        let mut editor = EditorPanel::new();
+        editor.set_new_file(&PathBuf::from("/tmp/file1.rs"));
+        editor.set_new_file(&PathBuf::from("/tmp/file2.rs"));
+
+        assert_eq!(editor.tab_count(), 2);
+
+        editor.switch_tab(0);
+        assert_eq!(editor.active_tab, 0);
+
+        editor.next_tab();
+        assert_eq!(editor.active_tab, 1);
+
+        editor.next_tab(); // Should wrap around
+        assert_eq!(editor.active_tab, 0);
+
+        editor.prev_tab(); // Should wrap around
+        assert_eq!(editor.active_tab, 1);
+    }
+
+    #[test]
+    fn test_editor_close_tab() {
+        let mut editor = EditorPanel::new();
+        editor.set_new_file(&PathBuf::from("/tmp/file1.rs"));
+        editor.set_new_file(&PathBuf::from("/tmp/file2.rs"));
+
+        assert_eq!(editor.tab_count(), 2);
+
+        editor.close_tab(0);
+        assert_eq!(editor.tab_count(), 1);
+
+        // Closing last tab should keep an empty tab
+        editor.close_current_tab();
+        assert_eq!(editor.tab_count(), 1);
+    }
+
+    #[test]
+    fn test_editor_find_tab_by_path() {
+        let mut editor = EditorPanel::new();
+        let path1 = PathBuf::from("/tmp/find_test1.rs");
+        let path2 = PathBuf::from("/tmp/find_test2.rs");
+
+        editor.set_new_file(&path1);
+        editor.set_new_file(&path2);
+
+        assert_eq!(editor.find_tab_by_path(&path1), Some(0));
+        assert_eq!(editor.find_tab_by_path(&path2), Some(1));
+        assert!(editor.find_tab_by_path(&PathBuf::from("/nonexistent")).is_none());
+    }
+
+    #[test]
+    fn test_editor_insert_char() {
+        let mut editor = EditorPanel::new();
+        editor.insert_char('a');
+        editor.insert_char('b');
+        editor.insert_char('c');
+
+        assert_eq!(editor.active_tab().lines[0], "abc");
+        assert_eq!(editor.active_tab().cursor.1, 3);
+        assert!(editor.active_tab().modified);
+    }
+
+    #[test]
+    fn test_editor_backspace() {
+        let mut editor = EditorPanel::new();
+        editor.insert_char('a');
+        editor.insert_char('b');
+        editor.backspace();
+
+        assert_eq!(editor.active_tab().lines[0], "a");
+        assert_eq!(editor.active_tab().cursor.1, 1);
+    }
+
+    #[test]
+    fn test_editor_newline() {
+        let mut editor = EditorPanel::new();
+        editor.insert_char('a');
+        editor.newline();
+        editor.insert_char('b');
+
+        assert_eq!(editor.active_tab().lines.len(), 2);
+        assert_eq!(editor.active_tab().lines[0], "a");
+        assert_eq!(editor.active_tab().lines[1], "b");
+        assert_eq!(editor.active_tab().cursor, (1, 1));
+    }
+
+    #[test]
+    fn test_editor_delete() {
+        let mut editor = EditorPanel::new();
+        editor.active_tab_mut().lines = vec!["abc".to_string()];
+        editor.active_tab_mut().cursor = (0, 1);
+
+        editor.delete();
+        assert_eq!(editor.active_tab().lines[0], "ac");
+    }
+
+    #[test]
+    fn test_editor_cursor_movement() {
+        let mut editor = EditorPanel::new();
+        editor.active_tab_mut().lines = vec![
+            "line 1".to_string(),
+            "line 2".to_string(),
+        ];
+
+        editor.move_cursor(Direction::Down);
+        assert_eq!(editor.active_tab().cursor.0, 1);
+
+        editor.move_cursor(Direction::Up);
+        assert_eq!(editor.active_tab().cursor.0, 0);
+
+        editor.move_cursor(Direction::Right);
+        assert_eq!(editor.active_tab().cursor.1, 1);
+
+        editor.move_cursor(Direction::Left);
+        assert_eq!(editor.active_tab().cursor.1, 0);
+    }
+
+    #[test]
+    fn test_editor_scrolling() {
+        let mut editor = EditorPanel::new();
+        editor.visible_height = 10;
+        editor.active_tab_mut().lines = (0..100).map(|i| format!("line {}", i)).collect();
+
+        editor.scroll_down(5);
+        assert_eq!(editor.active_tab().scroll.0, 5);
+
+        editor.scroll_up(3);
+        assert_eq!(editor.active_tab().scroll.0, 2);
+
+        editor.scroll_half_page_down();
+        assert!(editor.active_tab().scroll.0 > 2);
+
+        editor.scroll_to_bottom();
+        assert_eq!(editor.active_tab().scroll.0, 99);
+    }
+
+    #[test]
+    fn test_editor_apply_llm_modification() {
+        let mut editor = EditorPanel::new();
+        editor.set_new_file(&PathBuf::from("/tmp/llm_test.rs"));
+
+        let content = "fn main() {\n    println!(\"Hello\");\n}";
+        editor.apply_llm_modification(content);
+
+        assert_eq!(editor.active_tab().lines.len(), 3);
+        assert!(editor.active_tab().diff_tracker.is_tracking());
+        assert!(editor.active_tab().modified);
+    }
+
+    #[test]
+    fn test_editor_diff_tracking() {
+        let mut editor = EditorPanel::new();
+        editor.active_tab_mut().lines = vec!["original".to_string()];
+
+        editor.start_diff_tracking();
+        assert!(editor.active_tab().diff_tracker.is_tracking());
+
+        editor.stop_diff_tracking();
+        assert!(!editor.active_tab().diff_tracker.is_tracking());
+    }
+
+    #[test]
+    fn test_editor_calculate_end_position() {
+        let editor = EditorPanel::new();
+
+        // Single line
+        let start = Position::new(0, 0);
+        let end = editor.calculate_end_position(start, "hello");
+        assert_eq!(end, Position::new(0, 5));
+
+        // Multi line
+        let end = editor.calculate_end_position(start, "line1\nline2");
+        assert_eq!(end.line, 1);
+    }
+
+    #[test]
+    fn test_editor_current_file() {
+        let mut editor = EditorPanel::new();
+        assert!(editor.current_file().is_none());
+
+        let path = PathBuf::from("/tmp/current_test.rs");
+        editor.set_new_file(&path);
+        assert_eq!(editor.current_file(), Some(path.as_path()));
+    }
+
+    #[test]
+    fn test_editor_title() {
+        let mut editor = EditorPanel::new();
+        let title = editor.title();
+        assert!(title.contains("[New]"));
+
+        editor.active_tab_mut().modified = true;
+        let title = editor.title();
+        assert!(title.contains("*"));
+    }
+}

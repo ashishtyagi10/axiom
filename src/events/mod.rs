@@ -4,10 +4,11 @@
 
 use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError};
 use crossterm::event::{KeyEvent, MouseEvent};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::agents::{AgentSpawnRequest, AgentStatus};
-use crate::state::{AgentId, OutputContext, PanelId};
+use crate::state::{AgentId, OutputContext, PanelId, WorkspaceId};
 
 /// Application events - unified event type
 #[derive(Debug, Clone)]
@@ -130,6 +131,30 @@ pub enum Event {
         /// Raw input data to send
         data: Vec<u8>,
     },
+
+    // ===== Workspace Events =====
+
+    /// Request to switch to a different workspace
+    WorkspaceSwitch(WorkspaceId),
+
+    /// Create a new workspace
+    WorkspaceCreate {
+        /// Workspace name
+        name: String,
+        /// Workspace path
+        path: PathBuf,
+    },
+
+    /// Delete a workspace (by ID)
+    WorkspaceDelete(WorkspaceId),
+
+    /// Workspace switched successfully (notification)
+    WorkspaceSwitched {
+        /// The workspace ID that was switched to
+        id: WorkspaceId,
+        /// The workspace path
+        path: PathBuf,
+    },
 }
 
 /// Event bus using bounded crossbeam channels
@@ -248,5 +273,171 @@ mod tests {
 
         let remaining = bus.drain(10);
         assert_eq!(remaining.len(), 2);
+    }
+
+    #[test]
+    fn test_event_bus_capacity() {
+        let bus = EventBus::new(5);
+
+        for _ in 0..5 {
+            assert!(bus.sender().try_send(Event::Tick).is_ok());
+        }
+
+        // Channel should be full
+        assert!(bus.sender().try_send(Event::Tick).is_err());
+    }
+
+    #[test]
+    fn test_event_bus_recv_timeout() {
+        let bus = EventBus::new(10);
+
+        // Nothing in channel - should timeout
+        let result = bus.recv_timeout(Duration::from_millis(10));
+        assert!(result.is_none());
+
+        // Send an event
+        bus.sender().try_send(Event::Quit).unwrap();
+
+        // Should receive it
+        let result = bus.recv_timeout(Duration::from_millis(100));
+        assert!(matches!(result, Some(Event::Quit)));
+    }
+
+    #[test]
+    fn test_event_bus_try_recv_empty() {
+        let bus = EventBus::new(10);
+
+        // Empty channel
+        assert!(bus.try_recv().is_none());
+
+        // Send something
+        bus.sender().try_send(Event::Tick).unwrap();
+
+        // Should receive it
+        assert!(bus.try_recv().is_some());
+
+        // Now empty again
+        assert!(bus.try_recv().is_none());
+    }
+
+    #[test]
+    fn test_event_bus_drain_empty() {
+        let bus = EventBus::new(10);
+
+        let events = bus.drain(100);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_event_bus_multiple_senders() {
+        let bus = EventBus::new(10);
+
+        let tx1 = bus.sender();
+        let tx2 = bus.sender();
+
+        tx1.try_send(Event::Tick).unwrap();
+        tx2.try_send(Event::Tick).unwrap();
+
+        let events = bus.drain(10);
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn test_event_clone() {
+        let event = Event::LlmChunk("hello".to_string());
+        let cloned = event.clone();
+
+        if let Event::LlmChunk(text) = cloned {
+            assert_eq!(text, "hello");
+        } else {
+            panic!("Clone failed");
+        }
+    }
+
+    #[test]
+    fn test_event_debug() {
+        let event = Event::Tick;
+        let debug = format!("{:?}", event);
+        assert!(debug.contains("Tick"));
+    }
+
+    #[test]
+    fn test_event_variants_agent() {
+        let id = AgentId::new(1);
+
+        let spawn = Event::AgentSpawn(AgentSpawnRequest {
+            agent_type: crate::agents::AgentType::Shell,
+            name: "test".to_string(),
+            description: "test".to_string(),
+            parameters: None,
+            parent_id: None,
+        });
+        assert!(matches!(spawn, Event::AgentSpawn(_)));
+
+        let update = Event::AgentUpdate {
+            id,
+            status: AgentStatus::Running,
+        };
+        assert!(matches!(update, Event::AgentUpdate { .. }));
+
+        let output = Event::AgentOutput {
+            id,
+            chunk: "output".to_string(),
+        };
+        assert!(matches!(output, Event::AgentOutput { .. }));
+
+        let complete = Event::AgentComplete { id };
+        assert!(matches!(complete, Event::AgentComplete { .. }));
+    }
+
+    #[test]
+    fn test_event_variants_llm() {
+        let chunk = Event::LlmChunk("text".to_string());
+        assert!(matches!(chunk, Event::LlmChunk(_)));
+
+        let done = Event::LlmDone;
+        assert!(matches!(done, Event::LlmDone));
+
+        let error = Event::LlmError("error".to_string());
+        assert!(matches!(error, Event::LlmError(_)));
+    }
+
+    #[test]
+    fn test_event_variants_file() {
+        let modification = Event::FileModification {
+            path: "/test.rs".to_string(),
+            content: "fn main() {}".to_string(),
+        };
+        assert!(matches!(modification, Event::FileModification { .. }));
+
+        let changed = Event::FileChanged(std::path::PathBuf::from("/test.rs"));
+        assert!(matches!(changed, Event::FileChanged(_)));
+    }
+
+    #[test]
+    fn test_event_variants_cli_agent() {
+        let invoke = Event::CliAgentInvoke {
+            agent_id: "claude".to_string(),
+            prompt: "help me".to_string(),
+        };
+        assert!(matches!(invoke, Event::CliAgentInvoke { .. }));
+
+        let output = Event::CliAgentOutput {
+            id: AgentId::new(1),
+            data: vec![65, 66, 67],
+        };
+        assert!(matches!(output, Event::CliAgentOutput { .. }));
+
+        let exit = Event::CliAgentExit {
+            id: AgentId::new(1),
+            exit_code: 0,
+        };
+        assert!(matches!(exit, Event::CliAgentExit { .. }));
+
+        let input = Event::CliAgentInput {
+            id: AgentId::new(1),
+            data: vec![13],
+        };
+        assert!(matches!(input, Event::CliAgentInput { .. }));
     }
 }

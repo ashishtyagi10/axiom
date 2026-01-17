@@ -1,9 +1,10 @@
 //! Settings modal for configuring API keys and providers
 
 use crate::config::{AxiomConfig, LlmConfig, ProviderConfig};
+use crate::ui::theme::{theme, current_variant, set_theme, ThemeVariant};
 use ratatui::{
     layout::{Alignment, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
@@ -16,6 +17,7 @@ const PROVIDERS: [&str; 4] = ["ollama", "claude", "gemini", "openai"];
 /// Settings row enumeration
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SettingsRow {
+    Theme,
     DefaultProvider,
     ClaudeApiKey,
     GeminiApiKey,
@@ -28,6 +30,7 @@ pub enum SettingsRow {
 impl SettingsRow {
     fn all() -> &'static [SettingsRow] {
         &[
+            SettingsRow::Theme,
             SettingsRow::DefaultProvider,
             SettingsRow::ClaudeApiKey,
             SettingsRow::GeminiApiKey,
@@ -53,7 +56,7 @@ impl SettingsRow {
     }
 
     fn is_dropdown(&self) -> bool {
-        matches!(self, SettingsRow::DefaultProvider)
+        matches!(self, SettingsRow::DefaultProvider | SettingsRow::Theme)
     }
 
     fn is_button(&self) -> bool {
@@ -62,6 +65,7 @@ impl SettingsRow {
 
     fn label(&self) -> &'static str {
         match self {
+            SettingsRow::Theme => "Theme",
             SettingsRow::DefaultProvider => "Default Provider",
             SettingsRow::ClaudeApiKey => "Anthropic API Key",
             SettingsRow::GeminiApiKey => "Google API Key",
@@ -164,17 +168,30 @@ impl SettingsModal {
     /// Cycle dropdown left
     pub fn left(&mut self) {
         if !self.editing {
-            if let Some(SettingsRow::DefaultProvider) = SettingsRow::from_index(self.selected_row) {
-                let current_idx = PROVIDERS
-                    .iter()
-                    .position(|p| *p == self.default_provider)
-                    .unwrap_or(0);
-                let new_idx = if current_idx == 0 {
-                    PROVIDERS.len() - 1
-                } else {
-                    current_idx - 1
-                };
-                self.default_provider = PROVIDERS[new_idx].to_string();
+            match SettingsRow::from_index(self.selected_row) {
+                Some(SettingsRow::DefaultProvider) => {
+                    let current_idx = PROVIDERS
+                        .iter()
+                        .position(|p| *p == self.default_provider)
+                        .unwrap_or(0);
+                    let new_idx = if current_idx == 0 {
+                        PROVIDERS.len() - 1
+                    } else {
+                        current_idx - 1
+                    };
+                    self.default_provider = PROVIDERS[new_idx].to_string();
+                }
+                Some(SettingsRow::Theme) => {
+                    // Cycle theme backwards: Dark -> System -> Light -> Dark
+                    let current = current_variant();
+                    let new_variant = match current {
+                        ThemeVariant::Dark => ThemeVariant::System,
+                        ThemeVariant::Light => ThemeVariant::Dark,
+                        ThemeVariant::System => ThemeVariant::Light,
+                    };
+                    set_theme(new_variant);
+                }
+                _ => {}
             }
         }
     }
@@ -182,13 +199,21 @@ impl SettingsModal {
     /// Cycle dropdown right
     pub fn right(&mut self) {
         if !self.editing {
-            if let Some(SettingsRow::DefaultProvider) = SettingsRow::from_index(self.selected_row) {
-                let current_idx = PROVIDERS
-                    .iter()
-                    .position(|p| *p == self.default_provider)
-                    .unwrap_or(0);
-                let new_idx = (current_idx + 1) % PROVIDERS.len();
-                self.default_provider = PROVIDERS[new_idx].to_string();
+            match SettingsRow::from_index(self.selected_row) {
+                Some(SettingsRow::DefaultProvider) => {
+                    let current_idx = PROVIDERS
+                        .iter()
+                        .position(|p| *p == self.default_provider)
+                        .unwrap_or(0);
+                    let new_idx = (current_idx + 1) % PROVIDERS.len();
+                    self.default_provider = PROVIDERS[new_idx].to_string();
+                }
+                Some(SettingsRow::Theme) => {
+                    // Cycle theme forwards: Dark -> Light -> System -> Dark
+                    let current = current_variant();
+                    set_theme(current.cycle());
+                }
+                _ => {}
             }
         }
     }
@@ -460,6 +485,7 @@ impl SettingsModal {
         frame.render_widget(Clear, modal_area);
 
         // Modal block
+        let t = theme();
         let title = if self.has_changes() {
             " Settings * (unsaved) "
         } else {
@@ -469,8 +495,8 @@ impl SettingsModal {
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .style(Style::default().bg(Color::Rgb(30, 30, 40)));
+            .border_style(Style::default().fg(t.border_focused))
+            .style(Style::default().bg(t.bg_modal));
 
         let inner = block.inner(modal_area);
         frame.render_widget(block, modal_area);
@@ -512,22 +538,40 @@ impl SettingsModal {
 
     /// Render a single settings row
     fn render_row(&self, frame: &mut Frame, area: Rect, row: SettingsRow, selected: bool) {
+        let t = theme();
         let label_style = if selected && !row.is_button() {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(t.accent_primary)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(t.text_primary)
         };
 
         let is_editing_this = self.editing && SettingsRow::from_index(self.selected_row) == Some(row);
 
         match row {
+            SettingsRow::Theme => {
+                let value_style = if selected {
+                    Style::default().fg(t.accent_highlight)
+                } else {
+                    Style::default().fg(t.text_secondary)
+                };
+
+                let current = current_variant();
+                let theme_display = format!("< {} >", current.as_str());
+                let line = Line::from(vec![
+                    Span::styled(format!("{:>16}: ", row.label()), label_style),
+                    Span::styled(theme_display, value_style),
+                ]);
+
+                frame.render_widget(Paragraph::new(line), area);
+            }
+
             SettingsRow::DefaultProvider => {
                 let value_style = if selected {
-                    Style::default().fg(Color::Yellow)
+                    Style::default().fg(t.accent_highlight)
                 } else {
-                    Style::default().fg(Color::Gray)
+                    Style::default().fg(t.text_secondary)
                 };
 
                 let provider_display = format!("< {} >", self.default_provider);
@@ -562,17 +606,17 @@ impl SettingsModal {
                 };
 
                 let status = if value.is_empty() {
-                    Span::styled(" o", Style::default().fg(Color::DarkGray))
+                    Span::styled(" o", Style::default().fg(t.text_muted))
                 } else {
-                    Span::styled(" +", Style::default().fg(Color::Green))
+                    Span::styled(" +", Style::default().fg(t.status_success))
                 };
 
                 let value_style = if is_editing_this {
-                    Style::default().fg(Color::Yellow).bg(Color::Rgb(50, 50, 60))
+                    Style::default().fg(t.accent_highlight).bg(t.bg_selection)
                 } else if selected {
-                    Style::default().fg(Color::Gray)
+                    Style::default().fg(t.text_secondary)
                 } else {
-                    Style::default().fg(Color::DarkGray)
+                    Style::default().fg(t.text_muted)
                 };
 
                 let line = Line::from(vec![
@@ -595,11 +639,11 @@ impl SettingsModal {
                 };
 
                 let value_style = if is_editing_this {
-                    Style::default().fg(Color::Yellow).bg(Color::Rgb(50, 50, 60))
+                    Style::default().fg(t.accent_highlight).bg(t.bg_selection)
                 } else if selected {
-                    Style::default().fg(Color::Gray)
+                    Style::default().fg(t.text_secondary)
                 } else {
-                    Style::default().fg(Color::DarkGray)
+                    Style::default().fg(t.text_muted)
                 };
 
                 let line = Line::from(vec![
@@ -616,11 +660,11 @@ impl SettingsModal {
             SettingsRow::CancelButton | SettingsRow::SaveButton => {
                 let button_style = if selected {
                     Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
+                        .fg(t.text_inverse)
+                        .bg(t.accent_primary)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::Gray)
+                    Style::default().fg(t.text_secondary)
                 };
 
                 let label = format!(" {} ", row.label());

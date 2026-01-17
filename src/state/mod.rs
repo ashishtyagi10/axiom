@@ -11,3 +11,6 @@ pub use app::AppState;
 pub use context::{AgentId, OutputContext};
 pub use focus::{FocusState, PanelId};
 pub use input_mode::InputMode;
+
+// Re-export workspace types from axiom-core
+pub use axiom_core::{Workspace, WorkspaceId, WorkspaceManager, WorkspaceType, WorkspaceView};

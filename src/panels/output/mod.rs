@@ -15,12 +15,13 @@ use crate::core::Result;
 use crate::events::Event;
 use crate::panels::Panel;
 use crate::state::{AgentId, AppState, OutputContext, PanelId};
+use crate::ui::theme::theme;
 use crossbeam_channel::Sender;
 use crossterm::event::{KeyCode, KeyModifiers, MouseEventKind};
 use parking_lot::RwLock;
 use ratatui::{
     layout::Rect,
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Frame,
@@ -296,10 +297,11 @@ impl Panel for OutputPanel {
         // Store content area for input handling
         *self.content_area.borrow_mut() = area;
 
+        let t = theme();
         let border_style = if focused {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(t.border_focused)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(t.border_unfocused)
         };
 
         let title = self.title();
@@ -341,7 +343,7 @@ impl Panel for OutputPanel {
                                     Line::from(""),
                                     Line::from(Span::styled(
                                         format!("Starting {}...", agent_name),
-                                        Style::default().fg(Color::DarkGray),
+                                        Style::default().fg(t.text_muted),
                                     )),
                                 ]);
                                 frame.render_widget(msg, inner);
@@ -403,12 +405,12 @@ impl Panel for OutputPanel {
                     Line::from(""),
                     Line::from(Span::styled(
                         "No content selected",
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(t.text_muted),
                     )),
                     Line::from(""),
                     Line::from(Span::styled(
                         "Select a file from the tree or an agent from the right panel",
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(t.text_muted),
                     )),
                 ];
                 let msg = Paragraph::new(lines);
@@ -482,5 +484,159 @@ fn key_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Vec<u8> {
             _ => vec![],
         },
         _ => vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_key_to_bytes_char() {
+        let bytes = key_to_bytes(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(bytes, vec![b'a']);
+
+        let bytes = key_to_bytes(KeyCode::Char('Z'), KeyModifiers::NONE);
+        assert_eq!(bytes, vec![b'Z']);
+    }
+
+    #[test]
+    fn test_key_to_bytes_ctrl_char() {
+        // Ctrl+A should be 0x01
+        let bytes = key_to_bytes(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert_eq!(bytes, vec![0x01]);
+
+        // Ctrl+C should be 0x03
+        let bytes = key_to_bytes(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(bytes, vec![0x03]);
+    }
+
+    #[test]
+    fn test_key_to_bytes_enter() {
+        let bytes = key_to_bytes(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(bytes, vec![b'\r']);
+    }
+
+    #[test]
+    fn test_key_to_bytes_backspace() {
+        let bytes = key_to_bytes(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(bytes, vec![0x7f]);
+    }
+
+    #[test]
+    fn test_key_to_bytes_tab() {
+        let bytes = key_to_bytes(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(bytes, vec![b'\t']);
+    }
+
+    #[test]
+    fn test_key_to_bytes_escape() {
+        let bytes = key_to_bytes(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(bytes, vec![0x1b]);
+    }
+
+    #[test]
+    fn test_key_to_bytes_arrow_keys() {
+        assert_eq!(key_to_bytes(KeyCode::Up, KeyModifiers::NONE), b"\x1b[A".to_vec());
+        assert_eq!(key_to_bytes(KeyCode::Down, KeyModifiers::NONE), b"\x1b[B".to_vec());
+        assert_eq!(key_to_bytes(KeyCode::Right, KeyModifiers::NONE), b"\x1b[C".to_vec());
+        assert_eq!(key_to_bytes(KeyCode::Left, KeyModifiers::NONE), b"\x1b[D".to_vec());
+    }
+
+    #[test]
+    fn test_key_to_bytes_home_end() {
+        assert_eq!(key_to_bytes(KeyCode::Home, KeyModifiers::NONE), b"\x1b[H".to_vec());
+        assert_eq!(key_to_bytes(KeyCode::End, KeyModifiers::NONE), b"\x1b[F".to_vec());
+    }
+
+    #[test]
+    fn test_key_to_bytes_page_up_down() {
+        assert_eq!(key_to_bytes(KeyCode::PageUp, KeyModifiers::NONE), b"\x1b[5~".to_vec());
+        assert_eq!(key_to_bytes(KeyCode::PageDown, KeyModifiers::NONE), b"\x1b[6~".to_vec());
+    }
+
+    #[test]
+    fn test_key_to_bytes_delete_insert() {
+        assert_eq!(key_to_bytes(KeyCode::Delete, KeyModifiers::NONE), b"\x1b[3~".to_vec());
+        assert_eq!(key_to_bytes(KeyCode::Insert, KeyModifiers::NONE), b"\x1b[2~".to_vec());
+    }
+
+    #[test]
+    fn test_key_to_bytes_function_keys() {
+        assert_eq!(key_to_bytes(KeyCode::F(1), KeyModifiers::NONE), b"\x1bOP".to_vec());
+        assert_eq!(key_to_bytes(KeyCode::F(2), KeyModifiers::NONE), b"\x1bOQ".to_vec());
+        assert_eq!(key_to_bytes(KeyCode::F(3), KeyModifiers::NONE), b"\x1bOR".to_vec());
+        assert_eq!(key_to_bytes(KeyCode::F(4), KeyModifiers::NONE), b"\x1bOS".to_vec());
+        assert_eq!(key_to_bytes(KeyCode::F(5), KeyModifiers::NONE), b"\x1b[15~".to_vec());
+    }
+
+    #[test]
+    fn test_key_to_bytes_unicode() {
+        let bytes = key_to_bytes(KeyCode::Char('é'), KeyModifiers::NONE);
+        assert_eq!(bytes, "é".as_bytes().to_vec());
+    }
+
+    #[test]
+    fn test_key_to_bytes_unknown() {
+        let bytes = key_to_bytes(KeyCode::Null, KeyModifiers::NONE);
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn test_scroll_state_default() {
+        let state = ScrollState::default();
+        assert_eq!(state.offset, 0);
+    }
+
+    #[test]
+    fn test_context_key_generation() {
+        use std::path::PathBuf;
+
+        // Test with a mock output panel setup
+        let agent_registry = Arc::new(RwLock::new(AgentRegistry::new()));
+        let panel = OutputPanel::new(agent_registry);
+
+        // Empty context
+        let key = panel.context_key(&OutputContext::Empty);
+        assert_eq!(key, "empty");
+
+        // File context
+        let file_ctx = OutputContext::File { path: PathBuf::from("/test/file.rs") };
+        let key = panel.context_key(&file_ctx);
+        assert!(key.starts_with("file:"));
+
+        // Agent context
+        let agent_ctx = OutputContext::Agent { agent_id: AgentId::new(1) };
+        let key = panel.context_key(&agent_ctx);
+        assert!(key.starts_with("agent:"));
+    }
+
+    #[test]
+    fn test_output_panel_new() {
+        let agent_registry = Arc::new(RwLock::new(AgentRegistry::new()));
+        let panel = OutputPanel::new(agent_registry);
+
+        assert!(matches!(panel.context(), OutputContext::Empty));
+        assert_eq!(panel.visible_height, 20);
+    }
+
+    #[test]
+    fn test_output_panel_set_context() {
+        let agent_registry = Arc::new(RwLock::new(AgentRegistry::new()));
+        let mut panel = OutputPanel::new(agent_registry);
+
+        let ctx = OutputContext::Agent { agent_id: AgentId::new(1) };
+        panel.set_context(ctx);
+
+        assert!(matches!(panel.context(), OutputContext::Agent { .. }));
+    }
+
+    #[test]
+    fn test_output_panel_title_empty() {
+        let agent_registry = Arc::new(RwLock::new(AgentRegistry::new()));
+        let panel = OutputPanel::new(agent_registry);
+
+        let title = panel.title();
+        assert_eq!(title, " Output ");
     }
 }

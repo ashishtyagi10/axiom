@@ -1,8 +1,9 @@
 //! Scroll indicator utilities for panels
 
+use crate::ui::theme::theme;
 use ratatui::{
     layout::Rect,
-    style::{Color, Style},
+    style::Style,
     Frame,
 };
 
@@ -59,11 +60,12 @@ impl ScrollBar {
         };
 
         // Track and thumb colors
-        let track_style = Style::default().fg(Color::DarkGray);
+        let t = theme();
+        let track_style = Style::default().fg(t.scrollbar_track);
         let thumb_style = if focused {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(t.scrollbar_thumb_focused)
         } else {
-            Style::default().fg(Color::Gray)
+            Style::default().fg(t.scrollbar_thumb)
         };
 
         // Render track and thumb
@@ -79,11 +81,11 @@ impl ScrollBar {
 
         // Render down arrow button
         let arrow_style = if self.at_bottom() {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(t.text_muted)
         } else if focused {
-            Style::default().fg(Color::Yellow)
+            Style::default().fg(t.accent_highlight)
         } else {
-            Style::default().fg(Color::Gray)
+            Style::default().fg(t.text_secondary)
         };
         frame.buffer_mut().set_string(bar_x, arrow_y, "▼", arrow_style);
 
@@ -232,5 +234,147 @@ mod tests {
         let result = scroll_indicator(80, 20, 100);
         assert!(result.contains("81-100"));
         assert!(result.contains("100%"));
+    }
+
+    #[test]
+    fn test_scroll_indicator_middle() {
+        let result = scroll_indicator(40, 20, 100);
+        assert!(result.contains("41-60"));
+        assert!(result.contains("100"));
+    }
+
+    #[test]
+    fn test_scroll_percent_no_scroll() {
+        assert_eq!(scroll_percent(0, 20, 10), "");
+        assert_eq!(scroll_percent(0, 20, 20), "");
+    }
+
+    #[test]
+    fn test_scroll_percent_at_top() {
+        let result = scroll_percent(0, 20, 100);
+        assert!(result.contains("0%"));
+    }
+
+    #[test]
+    fn test_scroll_percent_at_bottom() {
+        let result = scroll_percent(80, 20, 100);
+        assert!(result.contains("100%"));
+    }
+
+    #[test]
+    fn test_is_scrollable() {
+        assert!(!is_scrollable(20, 10));
+        assert!(!is_scrollable(20, 20));
+        assert!(is_scrollable(20, 100));
+    }
+
+    #[test]
+    fn test_scrollbar_chars_no_scroll() {
+        let chars = scrollbar_chars(0, 20, 10, 10);
+        assert!(chars.is_empty());
+    }
+
+    #[test]
+    fn test_scrollbar_chars_at_top() {
+        let chars = scrollbar_chars(0, 10, 100, 10);
+        assert!(!chars.is_empty());
+        // Thumb should be at the top
+        assert_eq!(chars[0].1, '█');
+    }
+
+    #[test]
+    fn test_scrollbar_chars_at_bottom() {
+        let chars = scrollbar_chars(90, 10, 100, 10);
+        assert!(!chars.is_empty());
+        // Thumb should be at the bottom
+        assert_eq!(chars[chars.len() - 1].1, '█');
+    }
+
+    #[test]
+    fn test_scrollbar_new() {
+        let sb = ScrollBar::new(0, 20, 100);
+        assert_eq!(sb.current, 0);
+        assert_eq!(sb.visible, 20);
+        assert_eq!(sb.total, 100);
+        assert!(sb.scrollable);
+    }
+
+    #[test]
+    fn test_scrollbar_not_scrollable() {
+        let sb = ScrollBar::new(0, 20, 10);
+        assert!(!sb.scrollable);
+    }
+
+    #[test]
+    fn test_scrollbar_at_bottom() {
+        // Not scrollable - always at bottom
+        let sb = ScrollBar::new(0, 20, 10);
+        assert!(sb.at_bottom());
+
+        // Scrollable, at top
+        let sb = ScrollBar::new(0, 20, 100);
+        assert!(!sb.at_bottom());
+
+        // Scrollable, at bottom
+        let sb = ScrollBar::new(80, 20, 100);
+        assert!(sb.at_bottom());
+    }
+
+    #[test]
+    fn test_scrollbar_is_arrow_click() {
+        let sb = ScrollBar::new(0, 20, 100);
+        let area = Rect::new(0, 0, 10, 25);
+
+        // Arrow is at bottom-right
+        let bar_x = area.x + area.width - 1;
+        let arrow_y = area.y + area.height - 1;
+
+        assert!(sb.is_arrow_click(bar_x, arrow_y, area));
+        assert!(!sb.is_arrow_click(0, 0, area));
+    }
+
+    #[test]
+    fn test_scrollbar_is_arrow_click_not_scrollable() {
+        let sb = ScrollBar::new(0, 20, 10);
+        let area = Rect::new(0, 0, 10, 25);
+
+        // Should return false when not scrollable
+        assert!(!sb.is_arrow_click(9, 24, area));
+    }
+
+    #[test]
+    fn test_scrollbar_track_click_not_scrollable() {
+        let sb = ScrollBar::new(0, 20, 10);
+        let area = Rect::new(0, 0, 10, 25);
+
+        assert!(sb.track_click(9, 10, area).is_none());
+    }
+
+    #[test]
+    fn test_scrollbar_track_click_above_thumb() {
+        // Scrollbar at middle position
+        let sb = ScrollBar::new(50, 20, 100);
+        let area = Rect::new(0, 0, 10, 25);
+        let bar_x = area.x + area.width - 1;
+
+        // Click above thumb should return Some(true) for page up
+        let result = sb.track_click(bar_x, 1, area);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_scrollbar_track_click_wrong_column() {
+        let sb = ScrollBar::new(0, 20, 100);
+        let area = Rect::new(0, 0, 10, 25);
+
+        // Click not on scroll bar column
+        assert!(sb.track_click(5, 10, area).is_none());
+    }
+
+    #[test]
+    fn test_scroll_indicator_with_zero_total() {
+        let result = scroll_indicator(0, 20, 0);
+        // Should not panic, return empty
+        assert_eq!(result, "");
     }
 }

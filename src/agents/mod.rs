@@ -288,6 +288,20 @@ impl AgentRegistry {
         }
     }
 
+    /// Cancel an agent
+    pub fn cancel(&mut self, id: AgentId) {
+        if let Some(agent) = self.agents.get_mut(&id) {
+            agent.cancel();
+        }
+    }
+
+    /// Clear all agents from the registry
+    pub fn clear(&mut self) {
+        self.agents.clear();
+        self.order.clear();
+        self.selected = None;
+    }
+
     /// Remove completed/cancelled agents older than the specified age
     pub fn cleanup_old(&mut self, max_age: std::time::Duration) {
         let now = Instant::now();

@@ -3,6 +3,7 @@
 use crate::core::Result;
 use crate::events::Event;
 use crate::state::{AppState, PanelId};
+use crate::ui::theme::theme;
 use crate::ui::ScrollBar;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
@@ -68,6 +69,24 @@ impl FileTreePanel {
     /// Take pending file to open (returns and clears it)
     pub fn take_pending_open(&mut self) -> Option<PathBuf> {
         self.pending_open.take()
+    }
+
+    /// Set a new root directory for the file tree
+    ///
+    /// This is used when switching workspaces to update the file tree
+    /// to show the new workspace's directory structure.
+    pub fn set_root(&mut self, new_root: &Path) {
+        self.root = new_root.to_path_buf();
+        self.entries.clear();
+        self.selected = 0;
+        self.scroll = 0;
+        self.pending_open = None;
+        self.refresh();
+    }
+
+    /// Get the current root path
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     /// Refresh the file tree
@@ -367,10 +386,11 @@ impl super::Panel for FileTreePanel {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+        let t = theme();
         let border_style = if focused {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(t.border_focused)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(t.border_unfocused)
         };
 
         // Calculate inner area first to get visible height
@@ -412,36 +432,36 @@ impl super::Panel for FileTreePanel {
                 // Get icon and color based on file type
                 let (icon, base_color) = if entry.is_dir {
                     if entry.expanded {
-                        ("📂 ", Color::Yellow)
+                        ("📂 ", t.file_tree_directory)
                     } else {
-                        ("📁 ", Color::Yellow)
+                        ("📁 ", t.file_tree_directory)
                     }
                 } else {
-                    get_file_icon_and_color(&entry.name)
+                    get_file_icon_and_color(&entry.name, &t)
                 };
 
                 let is_selected = idx == self.selected;
 
                 // Build style
                 let icon_style = if is_selected {
-                    Style::default().bg(Color::Rgb(60, 60, 80))
+                    Style::default().bg(t.bg_selection)
                 } else {
                     Style::default()
                 };
 
                 let name_style = if is_selected {
                     Style::default()
-                        .fg(Color::White)
-                        .bg(Color::Rgb(60, 60, 80))
+                        .fg(t.text_primary)
+                        .bg(t.bg_selection)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(base_color)
                 };
 
                 let indent_style = if is_selected {
-                    Style::default().bg(Color::Rgb(60, 60, 80))
+                    Style::default().bg(t.bg_selection)
                 } else {
-                    Style::default().fg(Color::DarkGray)
+                    Style::default().fg(t.text_muted)
                 };
 
                 Line::from(vec![
@@ -462,44 +482,302 @@ impl super::Panel for FileTreePanel {
 }
 
 /// Get icon and color for a file based on extension
-fn get_file_icon_and_color(name: &str) -> (&'static str, Color) {
+fn get_file_icon_and_color(name: &str, t: &crate::ui::theme::Theme) -> (&'static str, Color) {
     let ext = name.rsplit('.').next().unwrap_or("");
     match ext.to_lowercase().as_str() {
         // Rust
-        "rs" => ("🦀 ", Color::Rgb(255, 100, 50)),
+        "rs" => ("🦀 ", t.status_error),
         // JavaScript/TypeScript
-        "js" => ("📜 ", Color::Yellow),
-        "ts" => ("📘 ", Color::Cyan),
-        "jsx" | "tsx" => ("⚛️  ", Color::Cyan),
+        "js" => ("📜 ", t.accent_highlight),
+        "ts" => ("📘 ", t.accent_primary),
+        "jsx" | "tsx" => ("⚛️  ", t.accent_primary),
         // Python
-        "py" => ("🐍 ", Color::Green),
+        "py" => ("🐍 ", t.status_success),
         // Web
-        "html" | "htm" => ("🌐 ", Color::Rgb(255, 100, 50)),
-        "css" | "scss" | "sass" => ("🎨 ", Color::Magenta),
+        "html" | "htm" => ("🌐 ", t.status_error),
+        "css" | "scss" | "sass" => ("🎨 ", t.accent_secondary),
         // Config
-        "json" => ("📋 ", Color::Yellow),
-        "yaml" | "yml" => ("📋 ", Color::LightRed),
-        "toml" => ("⚙️  ", Color::Gray),
-        "xml" => ("📄 ", Color::Rgb(255, 150, 50)),
+        "json" => ("📋 ", t.accent_highlight),
+        "yaml" | "yml" => ("📋 ", t.status_error),
+        "toml" => ("⚙️  ", t.text_secondary),
+        "xml" => ("📄 ", t.accent_highlight),
         // Markdown/Text
-        "md" | "markdown" => ("📝 ", Color::LightBlue),
-        "txt" => ("📄 ", Color::White),
+        "md" | "markdown" => ("📝 ", t.status_info),
+        "txt" => ("📄 ", t.text_primary),
         // Shell
-        "sh" | "bash" | "zsh" => ("💻 ", Color::Green),
+        "sh" | "bash" | "zsh" => ("💻 ", t.status_success),
         // Git
-        "gitignore" => ("🚫 ", Color::Gray),
+        "gitignore" => ("🚫 ", t.text_secondary),
         // Images
-        "png" | "jpg" | "jpeg" | "gif" | "svg" | "ico" => ("🖼️  ", Color::Magenta),
+        "png" | "jpg" | "jpeg" | "gif" | "svg" | "ico" => ("🖼️  ", t.accent_secondary),
         // Lock files
-        "lock" => ("🔒 ", Color::Gray),
+        "lock" => ("🔒 ", t.text_secondary),
         // Go
-        "go" => ("🔵 ", Color::Cyan),
+        "go" => ("🔵 ", t.accent_primary),
         // C/C++
-        "c" | "h" => ("🔧 ", Color::Blue),
-        "cpp" | "cc" | "hpp" => ("🔧 ", Color::Blue),
+        "c" | "h" => ("🔧 ", t.status_info),
+        "cpp" | "cc" | "hpp" => ("🔧 ", t.status_info),
         // Java
-        "java" => ("☕ ", Color::Rgb(255, 100, 50)),
+        "java" => ("☕ ", t.status_error),
         // Default
-        _ => ("📄 ", Color::White),
+        _ => ("📄 ", t.file_tree_file),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn create_temp_dir() -> (std::path::PathBuf, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let path = temp_dir.path().to_path_buf();
+        (path, temp_dir)
+    }
+
+    #[test]
+    fn test_file_tree_new() {
+        let (path, _guard) = create_temp_dir();
+        let panel = FileTreePanel::new(&path);
+        assert_eq!(panel.root, path);
+        assert_eq!(panel.selected, 0);
+        assert_eq!(panel.scroll, 0);
+        assert!(panel.pending_open.is_none());
+    }
+
+    #[test]
+    fn test_file_tree_refresh() {
+        let (path, _guard) = create_temp_dir();
+
+        // Create some files
+        fs::write(path.join("test.txt"), "content").unwrap();
+        fs::create_dir(path.join("subdir")).unwrap();
+
+        let mut panel = FileTreePanel::new(&path);
+        panel.refresh();
+
+        // Should have entries (directory sorted first)
+        assert!(!panel.entries.is_empty());
+    }
+
+    #[test]
+    fn test_file_entry_structure() {
+        let entry = FileEntry {
+            path: PathBuf::from("/test/file.rs"),
+            name: "file.rs".to_string(),
+            is_dir: false,
+            expanded: false,
+            depth: 0,
+        };
+
+        assert_eq!(entry.name, "file.rs");
+        assert!(!entry.is_dir);
+        assert!(!entry.expanded);
+        assert_eq!(entry.depth, 0);
+    }
+
+    #[test]
+    fn test_file_tree_navigation() {
+        let (path, _guard) = create_temp_dir();
+
+        // Create test files
+        fs::write(path.join("a.txt"), "").unwrap();
+        fs::write(path.join("b.txt"), "").unwrap();
+
+        let mut panel = FileTreePanel::new(&path);
+
+        assert_eq!(panel.selected, 0);
+        panel.move_down();
+        assert_eq!(panel.selected, 1);
+        panel.move_up();
+        assert_eq!(panel.selected, 0);
+    }
+
+    #[test]
+    fn test_file_tree_navigation_boundaries() {
+        let (path, _guard) = create_temp_dir();
+
+        fs::write(path.join("only.txt"), "").unwrap();
+
+        let mut panel = FileTreePanel::new(&path);
+
+        // Can't go above first entry
+        panel.move_up();
+        assert_eq!(panel.selected, 0);
+
+        // Can't go below last entry
+        panel.move_down();
+        panel.move_down();
+        assert!(panel.selected < panel.entries.len() || panel.entries.is_empty());
+    }
+
+    #[test]
+    fn test_file_tree_select_file() {
+        let (path, _guard) = create_temp_dir();
+
+        fs::write(path.join("test.txt"), "content").unwrap();
+
+        let panel = FileTreePanel::new(&path);
+
+        if !panel.entries.is_empty() {
+            let selected = panel.selected_file();
+            assert!(selected.is_some());
+        }
+    }
+
+    #[test]
+    fn test_file_tree_select_directory() {
+        let (path, _guard) = create_temp_dir();
+
+        fs::create_dir(path.join("subdir")).unwrap();
+
+        let mut panel = FileTreePanel::new(&path);
+
+        // Find the directory entry
+        for (i, entry) in panel.entries.iter().enumerate() {
+            if entry.is_dir {
+                panel.selected = i;
+                break;
+            }
+        }
+
+        // selected_file() should return None for directory
+        if let Some(entry) = panel.entries.get(panel.selected) {
+            if entry.is_dir {
+                assert!(panel.selected_file().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn test_take_pending_open() {
+        let (path, _guard) = create_temp_dir();
+
+        fs::write(path.join("test.txt"), "").unwrap();
+
+        let mut panel = FileTreePanel::new(&path);
+        panel.pending_open = Some(PathBuf::from("/test/file.rs"));
+
+        let taken = panel.take_pending_open();
+        assert!(taken.is_some());
+        assert!(panel.pending_open.is_none());
+    }
+
+    #[test]
+    fn test_file_tree_expand_collapse() {
+        let (path, _guard) = create_temp_dir();
+
+        // Create a directory with a file inside
+        let subdir = path.join("subdir");
+        fs::create_dir(&subdir).unwrap();
+        fs::write(subdir.join("nested.txt"), "").unwrap();
+
+        let mut panel = FileTreePanel::new(&path);
+
+        // Find directory entry
+        let dir_idx = panel.entries.iter().position(|e| e.is_dir);
+
+        if let Some(idx) = dir_idx {
+            panel.selected = idx;
+            assert!(!panel.entries[idx].expanded);
+
+            // Toggle to expand
+            panel.toggle_selected();
+            assert!(panel.entries[idx].expanded);
+
+            // Toggle to collapse
+            panel.toggle_selected();
+            assert!(!panel.entries[idx].expanded);
+        }
+    }
+
+    #[test]
+    fn test_file_tree_hidden_files_filtered() {
+        let (path, _guard) = create_temp_dir();
+
+        // Create a hidden file
+        fs::write(path.join(".hidden"), "").unwrap();
+        fs::write(path.join("visible.txt"), "").unwrap();
+
+        let panel = FileTreePanel::new(&path);
+
+        // Hidden files should be filtered out
+        let has_hidden = panel.entries.iter().any(|e| e.name.starts_with('.'));
+        assert!(!has_hidden);
+    }
+
+    #[test]
+    fn test_file_tree_sorting() {
+        let (path, _guard) = create_temp_dir();
+
+        // Create files and directories
+        fs::write(path.join("z_file.txt"), "").unwrap();
+        fs::write(path.join("a_file.txt"), "").unwrap();
+        fs::create_dir(path.join("z_dir")).unwrap();
+        fs::create_dir(path.join("a_dir")).unwrap();
+
+        let panel = FileTreePanel::new(&path);
+
+        // Directories should come before files
+        let first_file_idx = panel.entries.iter().position(|e| !e.is_dir);
+        let last_dir_idx = panel.entries.iter().rposition(|e| e.is_dir);
+
+        if let (Some(file_idx), Some(dir_idx)) = (first_file_idx, last_dir_idx) {
+            assert!(dir_idx < file_idx);
+        }
+    }
+
+    #[test]
+    fn test_file_tree_scroll_to_bottom() {
+        let (path, _guard) = create_temp_dir();
+
+        // Create multiple files
+        for i in 0..10 {
+            fs::write(path.join(format!("file{}.txt", i)), "").unwrap();
+        }
+
+        let mut panel = FileTreePanel::new(&path);
+        panel.scroll_to_bottom();
+
+        assert_eq!(panel.selected, panel.entries.len().saturating_sub(1));
+    }
+
+    #[test]
+    fn test_get_file_icon_and_color_rust() {
+        let t = crate::ui::theme::Theme::dark();
+        let (icon, _) = get_file_icon_and_color("main.rs", &t);
+        assert_eq!(icon, "🦀 ");
+    }
+
+    #[test]
+    fn test_get_file_icon_and_color_javascript() {
+        let t = crate::ui::theme::Theme::dark();
+        let (icon, _) = get_file_icon_and_color("app.js", &t);
+        assert_eq!(icon, "📜 ");
+
+        let (icon, _) = get_file_icon_and_color("app.ts", &t);
+        assert_eq!(icon, "📘 ");
+    }
+
+    #[test]
+    fn test_get_file_icon_and_color_python() {
+        let t = crate::ui::theme::Theme::dark();
+        let (icon, _) = get_file_icon_and_color("script.py", &t);
+        assert_eq!(icon, "🐍 ");
+    }
+
+    #[test]
+    fn test_get_file_icon_and_color_unknown() {
+        let t = crate::ui::theme::Theme::dark();
+        let (icon, _) = get_file_icon_and_color("file.xyz", &t);
+        assert_eq!(icon, "📄 ");
+    }
+
+    #[test]
+    fn test_get_file_icon_case_insensitive() {
+        let t = crate::ui::theme::Theme::dark();
+        let (icon1, _) = get_file_icon_and_color("file.RS", &t);
+        let (icon2, _) = get_file_icon_and_color("file.rs", &t);
+        assert_eq!(icon1, icon2);
     }
 }

@@ -89,3 +89,89 @@ impl From<serde_json::Error> for LlmError {
         LlmError::Internal(format!("JSON error: {}", err))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_llm_error_connection_display() {
+        let err = LlmError::Connection("refused".to_string());
+        assert_eq!(err.to_string(), "Connection error: refused");
+    }
+
+    #[test]
+    fn test_llm_error_api_display() {
+        let err = LlmError::Api {
+            status: 401,
+            message: "unauthorized".to_string(),
+        };
+        assert_eq!(err.to_string(), "API error (401): unauthorized");
+    }
+
+    #[test]
+    fn test_llm_error_model_not_found() {
+        let err = LlmError::ModelNotFound("gpt-5".to_string());
+        assert_eq!(err.to_string(), "Model not found: gpt-5");
+    }
+
+    #[test]
+    fn test_llm_error_provider_unavailable() {
+        let err = LlmError::ProviderUnavailable("ollama".to_string());
+        assert_eq!(err.to_string(), "Provider unavailable: ollama");
+    }
+
+    #[test]
+    fn test_llm_error_timeout() {
+        let err = LlmError::Timeout;
+        assert_eq!(err.to_string(), "Request timed out");
+    }
+
+    #[test]
+    fn test_llm_error_invalid_request() {
+        let err = LlmError::InvalidRequest("bad params".to_string());
+        assert_eq!(err.to_string(), "Invalid request: bad params");
+    }
+
+    #[test]
+    fn test_llm_error_rate_limited_with_retry() {
+        let err = LlmError::RateLimited { retry_after: Some(60) };
+        assert_eq!(err.to_string(), "Rate limited, retry after 60 seconds");
+    }
+
+    #[test]
+    fn test_llm_error_rate_limited_without_retry() {
+        let err = LlmError::RateLimited { retry_after: None };
+        assert_eq!(err.to_string(), "Rate limited");
+    }
+
+    #[test]
+    fn test_llm_error_internal() {
+        let err = LlmError::Internal("panic".to_string());
+        assert_eq!(err.to_string(), "Internal error: panic");
+    }
+
+    #[test]
+    fn test_llm_error_from_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let llm_err: LlmError = io_err.into();
+        assert!(matches!(llm_err, LlmError::Internal(_)));
+    }
+
+    #[test]
+    fn test_llm_error_debug() {
+        let err = LlmError::Timeout;
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("Timeout"));
+    }
+
+    #[test]
+    fn test_llm_error_clone() {
+        let err = LlmError::Api {
+            status: 500,
+            message: "error".to_string(),
+        };
+        let cloned = err.clone();
+        assert!(matches!(cloned, LlmError::Api { status: 500, .. }));
+    }
+}

@@ -8,14 +8,15 @@ use crate::core::Result;
 use crate::events::Event;
 use crate::panels::Panel;
 use crate::state::{AgentId, AppState, OutputContext, PanelId};
+use crate::ui::theme::theme;
 use crossbeam_channel::Sender;
-use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
 use parking_lot::RwLock;
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState},
+    widgets::{Block, Borders, List, ListItem},
     Frame,
 };
 use std::cell::RefCell;
@@ -255,10 +256,11 @@ impl Panel for AgentsPanel {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+        let t = theme();
         let border_style = if focused {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(t.border_focused)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(t.border_unfocused)
         };
 
         let registry = self.registry.read();
@@ -309,23 +311,23 @@ impl Panel for AgentsPanel {
             };
 
             let status_style = match &agent.status {
-                crate::agents::AgentStatus::Pending => Style::default().fg(Color::Yellow),
+                crate::agents::AgentStatus::Pending => Style::default().fg(t.agent_pending),
                 crate::agents::AgentStatus::Running => {
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    Style::default().fg(t.agent_running).add_modifier(Modifier::BOLD)
                 }
-                crate::agents::AgentStatus::Completed => Style::default().fg(Color::Green),
-                crate::agents::AgentStatus::Error(_) => Style::default().fg(Color::Red),
-                crate::agents::AgentStatus::Cancelled => Style::default().fg(Color::DarkGray),
-                crate::agents::AgentStatus::Idle => Style::default().fg(Color::Blue),
+                crate::agents::AgentStatus::Completed => Style::default().fg(t.agent_completed),
+                crate::agents::AgentStatus::Error(_) => Style::default().fg(t.agent_failed),
+                crate::agents::AgentStatus::Cancelled => Style::default().fg(t.text_muted),
+                crate::agents::AgentStatus::Idle => Style::default().fg(t.status_info),
             };
 
             // Line 1: Status + Type icon + Name
             let name_style = if is_selected && focused {
                 Style::default()
-                    .fg(Color::White)
+                    .fg(t.text_primary)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default()
+                Style::default().fg(t.text_primary)
             };
 
             let line1 = Line::from(vec![
@@ -359,14 +361,14 @@ impl Panel for AgentsPanel {
 
             let line2 = Line::from(Span::styled(
                 stats_parts,
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(t.text_muted),
             ));
 
             let item_style = if is_selected {
                 Style::default().bg(if focused {
-                    Color::DarkGray
+                    t.bg_selection
                 } else {
-                    Color::Rgb(40, 40, 40)
+                    t.bg_hover
                 })
             } else {
                 Style::default()
@@ -380,7 +382,7 @@ impl Panel for AgentsPanel {
         if items.is_empty() {
             let msg = Line::from(Span::styled(
                 "No agents yet",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(t.text_muted),
             ));
             frame.render_widget(ratatui::widgets::Paragraph::new(msg), inner);
         } else {
@@ -392,5 +394,117 @@ impl Panel for AgentsPanel {
     fn on_resize(&mut self, _cols: u16, rows: u16) {
         // Each agent takes 2 lines, so divide by 2
         self.visible_height = (rows.saturating_sub(2) / 2) as usize;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_duration_seconds() {
+        assert_eq!(AgentsPanel::format_duration(0), "0s");
+        assert_eq!(AgentsPanel::format_duration(30), "30s");
+        assert_eq!(AgentsPanel::format_duration(59), "59s");
+    }
+
+    #[test]
+    fn test_format_duration_minutes() {
+        assert_eq!(AgentsPanel::format_duration(60), "1m");
+        assert_eq!(AgentsPanel::format_duration(120), "2m");
+        assert_eq!(AgentsPanel::format_duration(3599), "59m");
+    }
+
+    #[test]
+    fn test_format_duration_hours() {
+        assert_eq!(AgentsPanel::format_duration(3600), "1h");
+        assert_eq!(AgentsPanel::format_duration(7200), "2h");
+    }
+
+    #[test]
+    fn test_format_tokens_compact_zero() {
+        assert_eq!(AgentsPanel::format_tokens_compact(0), "");
+    }
+
+    #[test]
+    fn test_format_tokens_compact_small() {
+        assert_eq!(AgentsPanel::format_tokens_compact(100), "100t");
+        assert_eq!(AgentsPanel::format_tokens_compact(999), "999t");
+    }
+
+    #[test]
+    fn test_format_tokens_compact_thousands() {
+        assert_eq!(AgentsPanel::format_tokens_compact(1000), "1.0Kt");
+        assert_eq!(AgentsPanel::format_tokens_compact(1500), "1.5Kt");
+        assert_eq!(AgentsPanel::format_tokens_compact(999999), "1000.0Kt");
+    }
+
+    #[test]
+    fn test_format_tokens_compact_millions() {
+        assert_eq!(AgentsPanel::format_tokens_compact(1_000_000), "1.0Mt");
+        assert_eq!(AgentsPanel::format_tokens_compact(2_500_000), "2.5Mt");
+    }
+
+    #[test]
+    fn test_spinner() {
+        // Spinner should return different characters for different times
+        let chars: Vec<char> = (0..8).map(|i| AgentsPanel::spinner(i * 100)).collect();
+        // All characters should be from the spinner frames
+        assert!(chars.iter().all(|c| "⠋⠙⠹⠸⠼⠴⠦⠧".contains(*c)));
+    }
+
+    #[test]
+    fn test_mini_progress_bar() {
+        let bar = AgentsPanel::mini_progress_bar(0, 10);
+        assert_eq!(bar, "[░░░░░░░░░░]");
+
+        let bar = AgentsPanel::mini_progress_bar(50, 10);
+        assert_eq!(bar, "[▓▓▓▓▓░░░░░]");
+
+        let bar = AgentsPanel::mini_progress_bar(100, 10);
+        assert_eq!(bar, "[▓▓▓▓▓▓▓▓▓▓]");
+    }
+
+    #[test]
+    fn test_animated_bar() {
+        let bar = AgentsPanel::animated_bar(0, 10);
+        assert!(bar.starts_with('['));
+        assert!(bar.ends_with(']'));
+        // Unicode chars take multiple bytes, so check char count instead
+        assert_eq!(bar.chars().count(), 12); // 10 chars + 2 brackets
+
+        // Different times should produce different bars
+        let bar1 = AgentsPanel::animated_bar(0, 10);
+        let bar2 = AgentsPanel::animated_bar(300, 10);
+        assert_ne!(bar1, bar2);
+    }
+
+    #[test]
+    fn test_agents_panel_new() {
+        let registry = Arc::new(RwLock::new(AgentRegistry::new()));
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let panel = AgentsPanel::new(registry.clone(), tx);
+
+        assert_eq!(panel.selected_index, 0);
+        assert_eq!(panel.scroll_offset, 0);
+        assert_eq!(panel.agent_count(), 0);
+    }
+
+    #[test]
+    fn test_agents_panel_ensure_visible() {
+        let registry = Arc::new(RwLock::new(AgentRegistry::new()));
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mut panel = AgentsPanel::new(registry.clone(), tx);
+
+        panel.visible_height = 5;
+        panel.selected_index = 10;
+        panel.scroll_offset = 0;
+
+        panel.ensure_visible();
+
+        // Scroll should adjust to show selected item
+        assert!(panel.scroll_offset > 0);
+        assert!(panel.selected_index >= panel.scroll_offset);
+        assert!(panel.selected_index < panel.scroll_offset + panel.visible_height);
     }
 }

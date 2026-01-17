@@ -183,3 +183,201 @@ impl ProviderInfo {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::{ChatMessage, LlmProvider, ProviderCapabilities};
+    use std::sync::Arc;
+
+    /// Mock provider for testing
+    struct MockProvider {
+        id: String,
+        name: String,
+        model: RwLock<String>,
+        status: ProviderStatus,
+    }
+
+    impl MockProvider {
+        fn new(id: &str, status: ProviderStatus) -> Self {
+            Self {
+                id: id.to_string(),
+                name: format!("Mock {}", id),
+                model: RwLock::new("mock-model".to_string()),
+                status,
+            }
+        }
+    }
+
+    impl LlmProvider for MockProvider {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn model(&self) -> String {
+            self.model.read().clone()
+        }
+
+        fn set_model(&self, model: &str) -> Result<(), LlmError> {
+            *self.model.write() = model.to_string();
+            Ok(())
+        }
+
+        fn list_models(&self) -> Result<Vec<String>, LlmError> {
+            Ok(vec!["mock-model".to_string(), "mock-model-2".to_string()])
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities::default()
+        }
+
+        fn status(&self) -> ProviderStatus {
+            self.status.clone()
+        }
+
+        fn send_message(&self, _messages: Vec<ChatMessage>, _event_tx: crossbeam_channel::Sender<crate::events::Event>) {
+            // Mock - does nothing
+        }
+    }
+
+    #[test]
+    fn test_registry_new() {
+        let registry = ProviderRegistry::new();
+        assert!(registry.provider_ids().is_empty());
+        assert!(registry.active().is_none());
+    }
+
+    #[test]
+    fn test_registry_register_provider() {
+        let mut registry = ProviderRegistry::new();
+        let provider: SharedProvider = Arc::new(MockProvider::new("test", ProviderStatus::Ready));
+        registry.register(provider);
+
+        assert!(registry.provider_ids().contains(&"test".to_string()));
+        assert!(registry.get("test").is_some());
+    }
+
+    #[test]
+    fn test_registry_get_provider() {
+        let mut registry = ProviderRegistry::new();
+        let provider: SharedProvider = Arc::new(MockProvider::new("claude", ProviderStatus::Ready));
+        registry.register(provider);
+
+        assert!(registry.get("claude").is_some());
+        assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_registry_set_active() {
+        let mut registry = ProviderRegistry::new();
+        let provider: SharedProvider = Arc::new(MockProvider::new("claude", ProviderStatus::Ready));
+        registry.register(provider);
+
+        assert!(registry.set_active("claude").is_ok());
+        assert_eq!(registry.active_id(), "claude");
+        assert!(registry.active().is_some());
+    }
+
+    #[test]
+    fn test_registry_set_active_nonexistent() {
+        let registry = ProviderRegistry::new();
+        assert!(registry.set_active("nonexistent").is_err());
+    }
+
+    #[test]
+    fn test_registry_fallback_chain() {
+        let mut registry = ProviderRegistry::new();
+
+        // First provider is unavailable
+        let unavailable: SharedProvider = Arc::new(MockProvider::new("claude", ProviderStatus::Unavailable("No key".to_string())));
+        registry.register(unavailable);
+
+        // Second provider is ready
+        let ready: SharedProvider = Arc::new(MockProvider::new("ollama", ProviderStatus::Ready));
+        registry.register(ready);
+
+        registry.fallback_chain = vec!["claude".to_string(), "ollama".to_string()];
+
+        // Should fall back to ollama
+        let provider = registry.get_with_fallback("claude");
+        assert!(provider.is_some());
+        assert_eq!(provider.unwrap().id(), "ollama");
+    }
+
+    #[test]
+    fn test_registry_available_providers() {
+        let mut registry = ProviderRegistry::new();
+
+        let ready1: SharedProvider = Arc::new(MockProvider::new("provider1", ProviderStatus::Ready));
+        let ready2: SharedProvider = Arc::new(MockProvider::new("provider2", ProviderStatus::Ready));
+        let unavailable: SharedProvider = Arc::new(MockProvider::new("provider3", ProviderStatus::Unavailable("down".to_string())));
+
+        registry.register(ready1);
+        registry.register(ready2);
+        registry.register(unavailable);
+
+        let available = registry.available_providers();
+        assert_eq!(available.len(), 2);
+    }
+
+    #[test]
+    fn test_registry_all_models() {
+        let mut registry = ProviderRegistry::new();
+        let provider: SharedProvider = Arc::new(MockProvider::new("test", ProviderStatus::Ready));
+        registry.register(provider);
+
+        let models = registry.all_models();
+        assert_eq!(models.len(), 2);
+        assert!(models.iter().any(|(p, m)| p == "test" && m == "mock-model"));
+    }
+
+    #[test]
+    fn test_provider_info_display() {
+        let info = ProviderInfo {
+            id: "claude".to_string(),
+            name: "Claude".to_string(),
+            model: "claude-3-sonnet".to_string(),
+            status: ProviderStatus::Ready,
+        };
+        assert_eq!(info.display(), "Claude (claude-3-sonnet)");
+    }
+
+    #[test]
+    fn test_provider_info_status_indicators() {
+        let ready = ProviderInfo {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            model: "model".to_string(),
+            status: ProviderStatus::Ready,
+        };
+        assert_eq!(ready.status_indicator(), "●");
+
+        let busy = ProviderInfo {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            model: "model".to_string(),
+            status: ProviderStatus::Busy,
+        };
+        assert_eq!(busy.status_indicator(), "◐");
+
+        let unavailable = ProviderInfo {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            model: "model".to_string(),
+            status: ProviderStatus::Unavailable("error".to_string()),
+        };
+        assert_eq!(unavailable.status_indicator(), "○");
+
+        let rate_limited = ProviderInfo {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            model: "model".to_string(),
+            status: ProviderStatus::RateLimited,
+        };
+        assert_eq!(rate_limited.status_indicator(), "◌");
+    }
+}

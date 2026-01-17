@@ -25,4 +25,4 @@ pub use agents::{Agent, AgentRegistry, AgentSpawnRequest, AgentStatus, AgentType
 pub use core::{AxiomError, Result};
 pub use events::{Event, EventBus};
 pub use panels::PanelRegistry;
-pub use state::{AgentId, AppState, OutputContext};
+pub use state::{AgentId, AppState, OutputContext, Workspace, WorkspaceId, WorkspaceManager, WorkspaceView};

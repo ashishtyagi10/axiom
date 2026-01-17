@@ -396,6 +396,16 @@ mod tests {
     }
 
     #[test]
+    fn test_truncate_exact_length() {
+        assert_eq!(truncate("hello", 5), "hello");
+    }
+
+    #[test]
+    fn test_truncate_empty() {
+        assert_eq!(truncate("", 5), "");
+    }
+
+    #[test]
     fn test_parse_shell_command() {
         let (tx, rx) = crossbeam_channel::unbounded();
         let response = "@shell ls -la";
@@ -406,6 +416,36 @@ mod tests {
             assert_eq!(req.agent_type, AgentType::Shell);
             assert_eq!(req.parameters, Some("ls -la".to_string()));
             assert_eq!(req.parent_id, Some(parent_id));
+        } else {
+            panic!("Expected AgentSpawn event");
+        }
+    }
+
+    #[test]
+    fn test_parse_search_command() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let response = "@search TODO comments";
+        let parent_id = AgentId::new(1);
+        parse_and_spawn_agents(response, &tx, parent_id);
+
+        if let Ok(Event::AgentSpawn(req)) = rx.try_recv() {
+            assert_eq!(req.agent_type, AgentType::Search);
+            assert_eq!(req.parameters, Some("TODO comments".to_string()));
+        } else {
+            panic!("Expected AgentSpawn event");
+        }
+    }
+
+    #[test]
+    fn test_parse_fileops_command() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let response = "@fileops read src/main.rs";
+        let parent_id = AgentId::new(1);
+        parse_and_spawn_agents(response, &tx, parent_id);
+
+        if let Ok(Event::AgentSpawn(req)) = rx.try_recv() {
+            assert_eq!(req.agent_type, AgentType::FileOps);
+            assert_eq!(req.parameters, Some("read src/main.rs".to_string()));
         } else {
             panic!("Expected AgentSpawn event");
         }
@@ -426,5 +466,91 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_parse_no_agents() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let response = "Here's a simple explanation without any agent commands.";
+        let parent_id = AgentId::new(1);
+        parse_and_spawn_agents(response, &tx, parent_id);
+
+        // Should not spawn any agents
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_conductor_new() {
+        let registry = Arc::new(RwLock::new(ProviderRegistry::new()));
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let conductor = Conductor::new(registry, tx);
+
+        assert!(conductor.agent_id().is_none());
+        assert!(conductor.history().is_empty());
+    }
+
+    #[test]
+    fn test_conductor_set_agent_id() {
+        let registry = Arc::new(RwLock::new(ProviderRegistry::new()));
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mut conductor = Conductor::new(registry, tx);
+
+        let id = AgentId::new(42);
+        conductor.set_agent_id(id);
+
+        assert_eq!(conductor.agent_id(), Some(id));
+    }
+
+    #[test]
+    fn test_conductor_add_response() {
+        let registry = Arc::new(RwLock::new(ProviderRegistry::new()));
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mut conductor = Conductor::new(registry, tx);
+
+        conductor.add_response("Hello!".to_string());
+
+        assert_eq!(conductor.history().len(), 1);
+        assert_eq!(conductor.history()[0].role, Role::Assistant);
+    }
+
+    #[test]
+    fn test_conductor_clear_history() {
+        let registry = Arc::new(RwLock::new(ProviderRegistry::new()));
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mut conductor = Conductor::new(registry, tx);
+
+        conductor.add_response("Response 1".to_string());
+        conductor.add_response("Response 2".to_string());
+        assert_eq!(conductor.history().len(), 2);
+
+        conductor.clear_history();
+        assert!(conductor.history().is_empty());
+    }
+
+    #[test]
+    fn test_conductor_history_trimming() {
+        let registry = Arc::new(RwLock::new(ProviderRegistry::new()));
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mut conductor = Conductor::new(registry, tx);
+
+        // Add more than max_history responses
+        for i in 0..25 {
+            conductor.add_response(format!("Response {}", i));
+        }
+
+        // History should be trimmed to max_history (20)
+        assert!(conductor.history().len() <= conductor.max_history);
+    }
+
+    #[test]
+    fn test_build_system_prompt() {
+        let prompt = build_system_prompt();
+
+        // Should contain key instructions
+        assert!(prompt.contains("Axiom"));
+        assert!(prompt.contains("@shell"));
+        assert!(prompt.contains("@coder"));
+        assert!(prompt.contains("@search"));
+        assert!(prompt.contains("@fileops"));
     }
 }

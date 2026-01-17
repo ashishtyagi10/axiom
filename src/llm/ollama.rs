@@ -204,3 +204,53 @@ fn send_ollama_request(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ollama_provider_default() {
+        let provider = OllamaProvider::default();
+        assert_eq!(provider.id(), "ollama");
+        assert_eq!(provider.name(), "Ollama");
+        assert_eq!(provider.model(), "gemma3:4b");
+    }
+
+    #[test]
+    fn test_ollama_provider_new() {
+        let provider = OllamaProvider::new("http://custom:11434", "llama2");
+        assert_eq!(provider.model(), "llama2");
+    }
+
+    #[test]
+    fn test_ollama_provider_with_model() {
+        let provider = OllamaProvider::with_model("codellama");
+        assert_eq!(provider.model(), "codellama");
+    }
+
+    #[test]
+    fn test_ollama_set_model() {
+        let provider = OllamaProvider::default();
+        assert!(provider.set_model("new-model").is_ok());
+        assert_eq!(provider.model(), "new-model");
+    }
+
+    #[test]
+    fn test_ollama_capabilities() {
+        let provider = OllamaProvider::default();
+        let caps = provider.capabilities();
+        assert!(caps.streaming);
+        assert!(!caps.function_calling);
+        assert!(caps.file_context);
+        assert_eq!(caps.max_context, 8192);
+        assert_eq!(caps.max_output, 4096);
+    }
+
+    #[test]
+    fn test_ollama_model_caching() {
+        let provider = OllamaProvider::default();
+        // Initially no cached models
+        assert!(provider.cached_models.read().is_none());
+    }
+}
