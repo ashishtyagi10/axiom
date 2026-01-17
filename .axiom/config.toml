@@ -1,0 +1,4 @@
+cli_agents = []
+ignore_patterns = []
+
+[env]

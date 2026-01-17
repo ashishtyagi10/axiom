@@ -1,0 +1,42 @@
+[package]
+name = "axiom-server"
+version = "0.1.0"
+edition = "2021"
+description = "HTTP/WebSocket server for Axiom - serves Web UI"
+authors = ["atyagi"]
+license = "MIT"
+
+[[bin]]
+name = "axiom-server"
+path = "src/main.rs"
+
+[dependencies]
+# Core backend
+axiom-core = { path = "../axiom-core" }
+
+# Web framework (using axum for now, gRPC can be added later)
+axum = { version = "0.7", features = ["ws", "macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "cors", "trace"] }
+
+# WebSocket
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# UUID for workspace IDs
+uuid = { version = "1.11", features = ["v4", "serde"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
