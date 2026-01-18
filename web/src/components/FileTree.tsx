@@ -8,28 +8,30 @@ import { listFilesAction } from '@/app/actions/workspace';
 
 interface FileTreeProps {
   files: FileEntry[];
-  rootPath: string;
+  workspaceId: string;
   onFileClick?: (file: FileEntry) => void;
 }
 
-export function FileTree({ files, rootPath, onFileClick }: FileTreeProps) {
+export function FileTree({ files, workspaceId, onFileClick }: FileTreeProps) {
   return (
     <div className="flex flex-col gap-0.5">
       {files.map((file) => (
-        <FileTreeItem key={file.path} entry={file} level={0} onFileClick={onFileClick} />
+        <FileTreeItem key={file.path} entry={file} level={0} workspaceId={workspaceId} onFileClick={onFileClick} />
       ))}
     </div>
   );
 }
 
-function FileTreeItem({ 
-  entry, 
-  level, 
-  onFileClick 
-}: { 
-  entry: FileEntry; 
-  level: number; 
-  onFileClick?: (file: FileEntry) => void 
+function FileTreeItem({
+  entry,
+  level,
+  workspaceId,
+  onFileClick
+}: {
+  entry: FileEntry;
+  level: number;
+  workspaceId: string;
+  onFileClick?: (file: FileEntry) => void
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [children, setChildren] = useState<FileEntry[]>([]);
@@ -41,7 +43,7 @@ function FileTreeItem({
       if (!isExpanded && !hasLoaded) {
         setIsLoading(true);
         try {
-          const files = await listFilesAction(entry.path);
+          const files = await listFilesAction(workspaceId, entry.path);
           // Sort: Folders first, then files
           const sorted = files.sort((a, b) => {
             if (a.isDirectory === b.isDirectory) return a.name.localeCompare(b.name);
@@ -92,10 +94,11 @@ function FileTreeItem({
             <div className="py-1 px-2 text-xs text-outline pl-8">Loading...</div>
           ) : (
             children.map((child) => (
-              <FileTreeItem 
-                key={child.path} 
-                entry={child} 
-                level={level + 1} 
+              <FileTreeItem
+                key={child.path}
+                entry={child}
+                level={level + 1}
+                workspaceId={workspaceId}
                 onFileClick={onFileClick}
               />
             ))

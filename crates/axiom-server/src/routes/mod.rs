@@ -577,8 +577,9 @@ pub async fn orchestrate(
         })
         .collect();
 
-    // Create orchestration service
-    let service = axiom_core::OrchestrationService::new(workspace.path.clone());
+    // Create orchestration service with shared config settings
+    let llm_settings = axiom_core::LlmSettings::from_axiom_config(&state.config);
+    let service = axiom_core::OrchestrationService::with_settings(workspace.path.clone(), llm_settings);
 
     match service.orchestrate(&chat_messages) {
         Ok(decision) => (
@@ -629,8 +630,9 @@ pub async fn run_developer(
         }
     };
 
-    // Create orchestration service
-    let service = axiom_core::OrchestrationService::new(workspace.path.clone());
+    // Create orchestration service with shared config settings
+    let llm_settings = axiom_core::LlmSettings::from_axiom_config(&state.config);
+    let service = axiom_core::OrchestrationService::with_settings(workspace.path.clone(), llm_settings);
 
     match service.run_developer(&req.task) {
         Ok(response) => {
@@ -689,12 +691,11 @@ pub async fn run_developer(
 
 /// Get LLM settings
 pub async fn get_llm_settings(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(_id): Path<String>,
 ) -> impl IntoResponse {
-    // For now, return default settings
-    // In a full implementation, this would be persisted per-workspace
-    let settings = axiom_core::LlmSettings::default();
+    // Use shared config settings (same as TUI)
+    let settings = axiom_core::LlmSettings::from_axiom_config(&state.config);
 
     let providers: Vec<serde_json::Value> = settings
         .providers

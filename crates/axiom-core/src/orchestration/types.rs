@@ -203,6 +203,72 @@ pub struct ProviderConfig {
     pub enabled: bool,
 }
 
+impl LlmSettings {
+    /// Create LlmSettings from AxiomConfig
+    ///
+    /// This converts the shared AxiomConfig LLM settings into the orchestration
+    /// format, ensuring both TUI and Web use the same configuration.
+    pub fn from_axiom_config(config: &crate::config::AxiomConfig) -> Self {
+        let default_provider = &config.llm.default_provider;
+        let default_model = config
+            .llm
+            .providers
+            .get(default_provider)
+            .and_then(|p| p.default_model.clone())
+            .unwrap_or_else(|| "llama3".to_string());
+
+        // Convert providers from HashMap to Vec
+        let providers: Vec<ProviderConfig> = config
+            .llm
+            .providers
+            .iter()
+            .map(|(id, p)| ProviderConfig {
+                id: id.clone(),
+                name: match id.as_str() {
+                    "ollama" => "Ollama (Local)".to_string(),
+                    "claude" | "anthropic" => "Anthropic".to_string(),
+                    "gemini" => "Google Gemini".to_string(),
+                    "openai" => "OpenAI".to_string(),
+                    _ => id.clone(),
+                },
+                api_key: p.api_key.clone().unwrap_or_default(),
+                base_url: p.base_url.clone(),
+                default_model: p.default_model.clone().unwrap_or_default(),
+                enabled: p.enabled,
+            })
+            .collect();
+
+        // Map all agents to the default provider
+        let agent_mappings = vec![
+            AgentMapping {
+                agent_id: AgentRole::Orchestrator,
+                provider_id: default_provider.clone(),
+                model_id: default_model.clone(),
+            },
+            AgentMapping {
+                agent_id: AgentRole::Po,
+                provider_id: default_provider.clone(),
+                model_id: default_model.clone(),
+            },
+            AgentMapping {
+                agent_id: AgentRole::Architect,
+                provider_id: default_provider.clone(),
+                model_id: default_model.clone(),
+            },
+            AgentMapping {
+                agent_id: AgentRole::Developer,
+                provider_id: default_provider.clone(),
+                model_id: default_model.clone(),
+            },
+        ];
+
+        Self {
+            providers,
+            agent_mappings,
+        }
+    }
+}
+
 impl Default for LlmSettings {
     fn default() -> Self {
         Self {

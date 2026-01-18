@@ -81,7 +81,7 @@ export default function WorkspaceStudio() {
         if (ws) {
           setWorkspace(ws);
           setIsLoadingFiles(true);
-          const fsEntries = await listFilesAction(ws.path);
+          const fsEntries = await listFilesAction(ws.id);
           setFiles(fsEntries.sort((a, b) => {
             if (a.isDirectory === b.isDirectory) return a.name.localeCompare(b.name);
             return a.isDirectory ? -1 : 1;
@@ -148,7 +148,7 @@ export default function WorkspaceStudio() {
              setTimeout(() => setRightPanelMode('team'), 3000);
            }
 
-           const fsEntries = await listFilesAction(workspace.path);
+           const fsEntries = await listFilesAction(workspace.id);
            setFiles(fsEntries.sort((a, b) => {
              if (a.isDirectory === b.isDirectory) return a.name.localeCompare(b.name);
              return a.isDirectory ? -1 : 1;
@@ -266,12 +266,12 @@ export default function WorkspaceStudio() {
             showLeftPanel ? "w-80" : "w-16"
           )}
         >
-          <LeftPanelContent 
-            collapsed={!showLeftPanel} 
+          <LeftPanelContent
+            collapsed={!showLeftPanel}
             onToggle={() => setShowLeftPanel(!showLeftPanel)}
             isLoading={isLoadingFiles}
             files={files}
-            workspacePath={workspace?.path || ''}
+            workspaceId={workspace?.id || ''}
             onFileClick={handleFileClick}
           />
         </section>
@@ -283,12 +283,12 @@ export default function WorkspaceStudio() {
             isMobileExplorerOpen ? "translate-x-0" : "-translate-x-[110%]"
           )}
         >
-           <LeftPanelContent 
-            collapsed={false} 
+           <LeftPanelContent
+            collapsed={false}
             onToggle={() => setIsMobileExplorerOpen(false)}
             isLoading={isLoadingFiles}
             files={files}
-            workspacePath={workspace?.path || ''}
+            workspaceId={workspace?.id || ''}
             onFileClick={handleFileClick}
             isMobile
           />
@@ -348,12 +348,18 @@ export default function WorkspaceStudio() {
             <div className="max-w-3xl mx-auto">
               <div className="flex flex-col bg-surface-container-high rounded-3xl p-2 shadow-sm focus-within:bg-surface-container-highest transition-all">
                 <div className="flex items-end gap-2 px-2">
-                  <textarea 
+                  <textarea
                     placeholder="Ask the team..."
                     className="flex-1 bg-transparent border-none focus:ring-0 outline-none resize-none py-3 px-1 text-base placeholder:text-outline max-h-40 min-h-[48px]"
                     rows={1}
                     value={inputValue}
                     onChange={(e) => setInputValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSendMessage();
+                      }
+                    }}
                   />
                   <button onClick={handleSendMessage} className="mb-1 p-2 bg-primary text-white rounded-full hover:shadow-lg disabled:opacity-30 transition-all">
                     <Send size={20} />
@@ -409,7 +415,7 @@ export default function WorkspaceStudio() {
 
 // --- Helper Components ---
 
-function LeftPanelContent({ collapsed, onToggle, isLoading, files, workspacePath, onFileClick, isMobile }: any) {
+function LeftPanelContent({ collapsed, onToggle, isLoading, files, workspaceId, onFileClick, isMobile }: any) {
   if (collapsed) {
     return (
       <div className="flex flex-col items-center py-4 gap-4 h-full bg-surface-container/50">
@@ -437,7 +443,7 @@ function LeftPanelContent({ collapsed, onToggle, isLoading, files, workspacePath
         {isLoading ? (
           <div className="flex items-center justify-center h-20 text-sm text-outline">Loading...</div>
         ) : (
-          <FileTree files={files} rootPath={workspacePath} onFileClick={onFileClick} />
+          <FileTree files={files} workspaceId={workspaceId} onFileClick={onFileClick} />
         )}
       </div>
     </>
