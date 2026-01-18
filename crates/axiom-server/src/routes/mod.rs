@@ -9,9 +9,12 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use axiom_core::{Command, Notification, WorkspaceId, WorkspaceView};
+use axiom_core::{
+    Command, SlashCommand, SlashCommandData, SlashCommandParser, SlashCommandResult, UiAction,
+    WorkspaceId,
+};
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command as TokioCommand;
@@ -770,4 +773,324 @@ pub async fn update_agent_mapping(
         "success": true,
         "message": "Agent mapping update not yet implemented - settings are in-memory only"
     }))
+}
+
+// ========== Slash Command Routes ==========
+
+#[derive(Deserialize)]
+pub struct SlashCommandRequest {
+    /// The raw command string (e.g., "/help", "/init")
+    command: String,
+}
+
+/// Execute a slash command
+pub async fn execute_slash_command(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<SlashCommandRequest>,
+) -> impl IntoResponse {
+    let workspace_id: WorkspaceId = match id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(SlashCommandResult::error("Invalid workspace ID")),
+            )
+        }
+    };
+
+    // Parse the slash command
+    let parsed = match SlashCommandParser::parse(&req.command) {
+        Some(Ok(cmd)) => cmd,
+        Some(Err(e)) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(SlashCommandResult::error(e.to_string())),
+            )
+        }
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(SlashCommandResult::error("Not a slash command")),
+            )
+        }
+    };
+
+    // Execute the command
+    let result = execute_slash_command_impl(&state, workspace_id, parsed).await;
+
+    (StatusCode::OK, Json(result))
+}
+
+/// Execute a parsed slash command and return the result
+async fn execute_slash_command_impl(
+    state: &AppState,
+    workspace_id: WorkspaceId,
+    command: SlashCommand,
+) -> SlashCommandResult {
+    match command {
+        SlashCommand::Help { command: topic } => {
+            let commands = if let Some(name) = topic {
+                match SlashCommandParser::get_command_help(&name) {
+                    Some(help) => vec![help],
+                    None => {
+                        return SlashCommandResult::error(format!("Unknown command: {}", name))
+                    }
+                }
+            } else {
+                SlashCommandParser::get_all_commands_help()
+            };
+            SlashCommandResult::data(SlashCommandData::Help { commands })
+        }
+
+        SlashCommand::Clear => SlashCommandResult::action(UiAction::ClearOutput),
+
+        SlashCommand::Settings => SlashCommandResult::action(UiAction::OpenSettings),
+
+        SlashCommand::Exit => SlashCommandResult::Exit,
+
+        SlashCommand::Version => SlashCommandResult::data(SlashCommandData::Version {
+            version: axiom_core::version().to_string(),
+            commit: None,
+        }),
+
+        SlashCommand::Init { path } => {
+            execute_init_command(state, workspace_id, path).await
+        }
+
+        SlashCommand::Workspace(sub) => {
+            execute_workspace_subcommand(state, sub).await
+        }
+
+        SlashCommand::Model(sub) => {
+            execute_model_subcommand(state, workspace_id, sub).await
+        }
+
+        SlashCommand::Theme(sub) => {
+            execute_theme_subcommand(sub)
+        }
+
+        SlashCommand::Custom { name, args: _ } => {
+            SlashCommandResult::error(format!(
+                "Unknown command: /{}. Type /help for available commands.",
+                name
+            ))
+        }
+    }
+}
+
+/// Execute the /init command - creates AXIOM.md in the workspace root
+async fn execute_init_command(
+    state: &AppState,
+    workspace_id: WorkspaceId,
+    path: Option<PathBuf>,
+) -> SlashCommandResult {
+    let manager = state.workspace_manager.read().await;
+
+    let workspace = match manager.get_workspace(workspace_id) {
+        Some(ws) => ws,
+        None => return SlashCommandResult::error("Workspace not found"),
+    };
+
+    // Determine the target path for AXIOM.md
+    let target_dir = match path {
+        Some(p) => workspace.path.join(p),
+        None => workspace.path.clone(),
+    };
+
+    let axiom_md_path = target_dir.join("AXIOM.md");
+
+    // Check if AXIOM.md already exists
+    if axiom_md_path.exists() {
+        return SlashCommandResult::error("AXIOM.md already exists in this directory");
+    }
+
+    // Create the AXIOM.md template
+    let template = format!(
+        r#"# AXIOM.md
+
+This file provides guidance to Axiom agents when working with code in this repository.
+
+## Project Overview
+
+**Name**: {}
+**Path**: {}
+
+[Describe your project here - what it does, its main purpose, and key features]
+
+## Build & Development Commands
+
+```bash
+# Build the project
+# [Add your build command here]
+
+# Run the project
+# [Add your run command here]
+
+# Run tests
+# [Add your test command here]
+
+# Format code
+# [Add your format command here]
+
+# Lint code
+# [Add your lint command here]
+```
+
+## Architecture
+
+[Describe your project's architecture here:
+- Main components and their responsibilities
+- Data flow between components
+- Key design patterns used
+- Directory structure overview]
+
+## Development Guidelines
+
+[Add any coding standards, patterns, or practices that agents should follow:
+- Naming conventions
+- Error handling approach
+- Testing requirements
+- Documentation standards]
+
+## Dependencies
+
+[List key dependencies and their purposes:
+- Core frameworks
+- Important libraries
+- Development tools]
+
+---
+
+*This file was generated by Axiom. Update it to help AI agents understand your codebase.*
+"#,
+        workspace.name,
+        workspace.path.display()
+    );
+
+    // Write the file
+    match tokio::fs::write(&axiom_md_path, &template).await {
+        Ok(_) => SlashCommandResult::success(format!(
+            "Created AXIOM.md in {}",
+            target_dir.display()
+        )),
+        Err(e) => SlashCommandResult::error(format!("Failed to create AXIOM.md: {}", e)),
+    }
+}
+
+/// Execute workspace subcommands
+async fn execute_workspace_subcommand(
+    state: &AppState,
+    sub: axiom_core::WorkspaceSubcommand,
+) -> SlashCommandResult {
+    use axiom_core::WorkspaceSubcommand;
+
+    match sub {
+        WorkspaceSubcommand::List => {
+            let manager = state.workspace_manager.read().await;
+            let workspaces = manager.list_workspaces();
+            let active_id = manager.active_workspace_id();
+
+            let info: Vec<axiom_core::WorkspaceInfo> = workspaces
+                .iter()
+                .map(|ws| axiom_core::WorkspaceInfo {
+                    id: ws.id.to_string(),
+                    name: ws.name.clone(),
+                    path: ws.path.to_string_lossy().to_string(),
+                    is_active: Some(ws.id) == active_id,
+                })
+                .collect();
+
+            SlashCommandResult::data(SlashCommandData::WorkspaceList(info))
+        }
+
+        WorkspaceSubcommand::Switch { id } => {
+            if let Some(ws_id_str) = id {
+                match ws_id_str.parse::<WorkspaceId>() {
+                    Ok(ws_id) => {
+                        let manager = state.workspace_manager.read().await;
+                        match manager.activate_workspace(ws_id) {
+                            Ok(_) => SlashCommandResult::success("Workspace activated"),
+                            Err(e) => SlashCommandResult::error(e.to_string()),
+                        }
+                    }
+                    Err(_) => SlashCommandResult::error("Invalid workspace ID"),
+                }
+            } else {
+                SlashCommandResult::action(UiAction::OpenWorkspaceSelector)
+            }
+        }
+
+        WorkspaceSubcommand::Create { name, path } => {
+            let manager = state.workspace_manager.read().await;
+            match manager.create_workspace(&name, path) {
+                Ok(ws) => SlashCommandResult::success(format!(
+                    "Created workspace '{}' with ID {}",
+                    ws.name, ws.id
+                )),
+                Err(e) => SlashCommandResult::error(e.to_string()),
+            }
+        }
+    }
+}
+
+/// Execute model subcommands
+async fn execute_model_subcommand(
+    state: &AppState,
+    _workspace_id: WorkspaceId,
+    sub: axiom_core::ModelSubcommand,
+) -> SlashCommandResult {
+    use axiom_core::ModelSubcommand;
+
+    match sub {
+        ModelSubcommand::List => {
+            // Get LLM settings from config
+            let settings = axiom_core::LlmSettings::from_axiom_config(&state.config);
+
+            // Find the first enabled provider with models
+            for provider in &settings.providers {
+                if provider.enabled {
+                    return SlashCommandResult::data(SlashCommandData::ModelList {
+                        provider: provider.name.clone(),
+                        models: vec![provider.default_model.clone()],
+                        active: Some(provider.default_model.clone()),
+                    });
+                }
+            }
+
+            SlashCommandResult::error("No LLM providers configured")
+        }
+
+        ModelSubcommand::Set { model } => {
+            // TODO: Actually persist model selection
+            SlashCommandResult::success(format!("Model set to: {}", model))
+        }
+
+        ModelSubcommand::Current => {
+            let settings = axiom_core::LlmSettings::from_axiom_config(&state.config);
+
+            for provider in &settings.providers {
+                if provider.enabled {
+                    return SlashCommandResult::data(SlashCommandData::Text(format!(
+                        "Current model: {} ({})",
+                        provider.default_model, provider.name
+                    )));
+                }
+            }
+
+            SlashCommandResult::error("No active model")
+        }
+    }
+}
+
+/// Execute theme subcommands
+fn execute_theme_subcommand(sub: axiom_core::ThemeSubcommand) -> SlashCommandResult {
+    use axiom_core::ThemeSubcommand;
+
+    match sub {
+        ThemeSubcommand::Toggle => SlashCommandResult::action(UiAction::ToggleTheme),
+        ThemeSubcommand::Set { variant } => {
+            SlashCommandResult::action(UiAction::SetTheme { variant })
+        }
+    }
 }

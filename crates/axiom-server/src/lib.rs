@@ -85,6 +85,11 @@ fn build_router(state: AppState) -> Router {
             "/api/workspaces/:id/llm/mappings/:agent_id",
             axum::routing::put(routes::update_agent_mapping),
         )
+        // Slash command route
+        .route(
+            "/api/workspaces/:id/slash",
+            axum::routing::post(routes::execute_slash_command),
+        )
         // Serve static files (UI) - from Next.js build output
         .nest_service("/", ServeDir::new("web/out").fallback(get(index_html)))
         // Middleware

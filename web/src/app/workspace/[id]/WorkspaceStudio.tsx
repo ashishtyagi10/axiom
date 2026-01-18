@@ -24,9 +24,11 @@ import {
 import { cn } from '@/lib/utils';
 import LinkNext from 'next/link';
 import { ThemeToggle } from '@/components/ThemeToggle';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { getWorkspaceByIdAction, listFilesAction, readFileAction } from '@/app/actions/workspace';
 import { orchestrateAction, developerAction } from '@/app/actions/agent';
+import { slashCommandAction } from '@/app/actions/slash';
+import type { SlashCommandResult, SlashCommandData, UiAction, CommandHelp } from '@/lib/api/types';
 import { runCommandAction } from '@/app/actions/terminal';
 import { WorkspaceConfig } from '@/lib/types';
 import { FileEntry } from '@/lib/api/types';
@@ -38,9 +40,11 @@ import { LLMMessage } from '@/lib/llm/api';
 
 export default function WorkspaceStudio() {
   const params = useParams();
+  const router = useRouter();
   const workspaceId = params.id as string;
 
   const [workspace, setWorkspace] = useState<WorkspaceConfig | null>(null);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [isLoadingFiles, setIsLoadingFiles] = useState(false);
   
@@ -103,9 +107,177 @@ export default function WorkspaceStudio() {
     }));
   };
 
+  // Handle slash commands (e.g., /help, /clear, /init)
+  const handleSlashCommand = async (command: string) => {
+    console.log('[SlashCommand] Handler called with:', command);
+    setInputValue('');
+
+    // Show the command in chat
+    setMessages(prev => [...prev, { role: 'user', content: command }]);
+
+    try {
+      const result = await slashCommandAction(workspaceId, command);
+      console.log('[SlashCommand] Result from backend:', result);
+      handleSlashCommandResult(result);
+    } catch (error) {
+      console.error('[SlashCommand] Error:', error);
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: `Error: ${error instanceof Error ? error.message : 'Failed to execute command'}`
+      }]);
+    }
+  };
+
+  // Handle different slash command results
+  const handleSlashCommandResult = (result: SlashCommandResult) => {
+    console.log('[SlashCommand] handleSlashCommandResult:', result);
+
+    switch (result.type) {
+      case 'Exit':
+        console.log('[SlashCommand] Exit handler triggered');
+        // Show feedback before navigating
+        setMessages(prev => [...prev, { role: 'assistant', content: 'Closing workspace...' }]);
+        // Small delay for visual feedback, then navigate
+        setTimeout(() => {
+          router.push('/');
+        }, 500);
+        break;
+
+      case 'Success':
+        if (result.message) {
+          const msg = result.message;
+          setMessages(prev => [...prev, { role: 'assistant', content: msg }]);
+        }
+        // Refresh file list in case /init created a file
+        if (workspace) {
+          listFilesAction(workspace.id).then(entries => {
+            setFiles(entries.sort((a, b) => {
+              if (a.isDirectory === b.isDirectory) return a.name.localeCompare(b.name);
+              return a.isDirectory ? -1 : 1;
+            }));
+          });
+        }
+        break;
+
+      case 'UiAction':
+        handleUiAction(result.action);
+        break;
+
+      case 'Data':
+        displayCommandData(result.data);
+        break;
+
+      case 'Error':
+        setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${result.message}` }]);
+        break;
+    }
+  };
+
+  // Handle UI actions from slash commands
+  const handleUiAction = (action: UiAction) => {
+    switch (action.action) {
+      case 'OpenSettings':
+        setShowSettingsModal(true);
+        break;
+
+      case 'ClearOutput':
+        setMessages([]);
+        break;
+
+      case 'ToggleTheme':
+        // Theme toggle is handled by ThemeToggle component
+        // For now, just show a message
+        setMessages(prev => [...prev, { role: 'assistant', content: 'Use the theme toggle in the header to switch themes.' }]);
+        break;
+
+      case 'SetTheme':
+        setMessages(prev => [...prev, { role: 'assistant', content: `Theme set to: ${action.variant}` }]);
+        break;
+
+      case 'OpenWorkspaceSelector':
+        router.push('/');
+        break;
+
+      case 'OpenModelSelector':
+        setShowSettingsModal(true);
+        break;
+
+      case 'FocusPanel':
+        // Panels are always visible, just acknowledge
+        setMessages(prev => [...prev, { role: 'assistant', content: `Focus: ${action.panel}` }]);
+        break;
+    }
+  };
+
+  // Display data from slash commands
+  const displayCommandData = (data: SlashCommandData) => {
+    switch (data.data_type) {
+      case 'Help':
+        const helpContent = formatHelpContent(data.value.commands);
+        setMessages(prev => [...prev, { role: 'assistant', content: helpContent }]);
+        break;
+
+      case 'Version':
+        const versionInfo = `**Axiom** v${data.value.version}${data.value.commit ? ` (${data.value.commit})` : ''}`;
+        setMessages(prev => [...prev, { role: 'assistant', content: versionInfo }]);
+        break;
+
+      case 'WorkspaceList':
+        const wsContent = formatWorkspaceList(data.value);
+        setMessages(prev => [...prev, { role: 'assistant', content: wsContent }]);
+        break;
+
+      case 'ModelList':
+        const modelContent = `**Models** (${data.value.provider}):\n${data.value.models.map(m =>
+          m === data.value.active ? `- **${m}** (active)` : `- ${m}`
+        ).join('\n')}`;
+        setMessages(prev => [...prev, { role: 'assistant', content: modelContent }]);
+        break;
+
+      case 'Text':
+        setMessages(prev => [...prev, { role: 'assistant', content: data.value }]);
+        break;
+    }
+  };
+
+  // Format help content for display
+  const formatHelpContent = (commands: CommandHelp[]): string => {
+    let content = '**Available Commands**\n\n';
+    for (const cmd of commands) {
+      content += `**/${cmd.name}**`;
+      if (cmd.aliases.length > 0) {
+        content += ` (aliases: ${cmd.aliases.map(a => `/${a}`).join(', ')})`;
+      }
+      content += `\n${cmd.description}\n`;
+      content += `Usage: \`${cmd.usage}\`\n\n`;
+    }
+    return content;
+  };
+
+  // Format workspace list for display
+  const formatWorkspaceList = (workspaces: Array<{ id: string; name: string; path: string; is_active: boolean }>): string => {
+    let content = '**Workspaces**\n\n';
+    for (const ws of workspaces) {
+      content += ws.is_active ? `- **${ws.name}** (active)\n` : `- ${ws.name}\n`;
+      content += `  Path: ${ws.path}\n`;
+      content += `  ID: ${ws.id}\n\n`;
+    }
+    return content;
+  };
+
   const handleSendMessage = async () => {
     if (!inputValue.trim()) return;
-    
+
+    console.log('[handleSendMessage] Input:', JSON.stringify(inputValue));
+    console.log('[handleSendMessage] Starts with /:', inputValue.trim().startsWith('/'));
+
+    // Check for slash command
+    if (inputValue.trim().startsWith('/')) {
+      console.log('[SlashCommand] Detected:', inputValue.trim());
+      await handleSlashCommand(inputValue.trim());
+      return;
+    }
+
     const userMsg: LLMMessage = { role: 'user', content: inputValue };
     if (activeFile) setActiveFile(null);
     setMessages(prev => [...prev, userMsg]);

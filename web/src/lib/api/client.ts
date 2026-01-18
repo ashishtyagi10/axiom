@@ -262,6 +262,18 @@ class AxiomApiClient {
       }
     );
   }
+
+  // ========== Slash Command Operations ==========
+
+  async executeSlashCommand(
+    workspaceId: string,
+    command: string
+  ): Promise<import('./types').SlashCommandResult> {
+    return this.fetch(`/api/workspaces/${workspaceId}/slash`, {
+      method: 'POST',
+      body: JSON.stringify({ command }),
+    });
+  }
 }
 
 // Singleton instance
