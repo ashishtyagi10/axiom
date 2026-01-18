@@ -4,11 +4,18 @@
  */
 
 // Workspace Types
+// Note: workspace_type is serialized from Rust with #[serde(tag = "type")],
+// so it comes as { type: "Local" } or { type: "Remote", host: string, port: number, ... }
+export type WorkspaceTypeValue =
+  | { type: 'Local' }
+  | { type: 'Remote'; host: string; port: number; user?: string }
+  | { type: 'Container'; image: string; name?: string };
+
 export interface Workspace {
   id: string;
   name: string;
   path: string;
-  workspace_type: 'local' | 'remote' | 'virtual';
+  workspace_type: WorkspaceTypeValue;
   is_active: boolean;
   created_at: number; // Unix timestamp
   last_accessed: number; // Unix timestamp
@@ -19,7 +26,7 @@ export interface WorkspaceView {
   id: string;
   name: string;
   path: string;
-  workspace_type: 'local' | 'remote' | 'virtual';
+  workspace_type: WorkspaceTypeValue;
   is_active: boolean;
 }
 

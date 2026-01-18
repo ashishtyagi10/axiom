@@ -16,11 +16,25 @@ export interface WorkspaceConfig {
 // Convert Axiom Workspace to OSMO-compatible WorkspaceConfig
 function toWorkspaceConfig(ws: WorkspaceView | Workspace): WorkspaceConfig {
   const w = ws as Workspace;
+
+  // workspace_type comes from Rust as { type: "Local" } or { type: "Remote", host: ... }
+  // due to serde's #[serde(tag = "type")] attribute
+  let workspaceType: 'local' | 'remote' = 'local';
+  if (ws.workspace_type && typeof ws.workspace_type === 'object') {
+    const wsType = (ws.workspace_type as { type: string }).type?.toLowerCase();
+    if (wsType === 'remote') {
+      workspaceType = 'remote';
+    }
+  } else if (typeof ws.workspace_type === 'string') {
+    // Handle case where it might already be a string
+    workspaceType = ws.workspace_type === 'remote' ? 'remote' : 'local';
+  }
+
   return {
     id: ws.id,
     title: ws.name,
     path: ws.path,
-    type: ws.workspace_type === 'virtual' ? 'local' : ws.workspace_type,
+    type: workspaceType,
     lastAccessed: w.last_accessed
       ? new Date(w.last_accessed * 1000).toISOString()
       : new Date().toISOString(),
