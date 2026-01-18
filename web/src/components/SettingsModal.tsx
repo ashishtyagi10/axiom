@@ -83,7 +83,7 @@ export function SettingsModal({ isOpen, onOpenChange }: SettingsModalProps) {
             </div>
 
             {/* Content Area */}
-            <div className="flex-1 overflow-y-auto p-6 bg-surface">
+            <div className="flex-1 overflow-y-auto scroll-stable p-6 bg-surface">
               {isLoading ? (
                 <div className="flex items-center justify-center h-40">
                   <Loader2 className="animate-spin text-outline" />

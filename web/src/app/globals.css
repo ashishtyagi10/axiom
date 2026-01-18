@@ -74,3 +74,8 @@ body {
     @apply border-outline-variant;
   }
 }
+
+/* Scrollbar styling - reserve space to prevent overlap */
+.scroll-stable {
+  scrollbar-gutter: stable;
+}

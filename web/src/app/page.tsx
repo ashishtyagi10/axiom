@@ -103,7 +103,7 @@ export default function Dashboard() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto p-6 md:p-8 lg:p-12">
+      <main className="flex-1 overflow-y-auto scroll-stable p-6 md:p-8 lg:p-12">
         <header className="flex justify-between items-center mb-8">
           <h1 className="text-3xl font-normal text-foreground">Workspaces</h1>
           <button 
