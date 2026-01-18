@@ -60,10 +60,14 @@ export async function getHomeDirAction(): Promise<string> {
   return process.env.HOME || '/';
 }
 
-export async function readFileAction(path: string): Promise<string> {
-  // This requires knowing the workspace ID
-  // For now, we'll need to refactor components to pass workspace ID
-  throw new Error('readFileAction requires workspace ID - use component with workspace context');
+export async function readFileAction(workspaceId: string, path: string): Promise<string> {
+  try {
+    const response = await axiomApi.readFile(workspaceId, path);
+    return response.content;
+  } catch (error) {
+    console.error('Failed to read file:', error);
+    throw new Error('Failed to read file');
+  }
 }
 
 export async function writeFileAction(path: string, content: string): Promise<void> {

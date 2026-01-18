@@ -174,7 +174,7 @@ export default function WorkspaceStudio() {
     setIsLoadingContent(true);
     setIsMobileExplorerOpen(false); // Close mobile explorer on select
     try {
-      const content = await readFileAction(file.path);
+      const content = await readFileAction(workspaceId, file.path);
       setFileContent(content);
     } catch (error) {
       setFileContent('Error reading file.');
