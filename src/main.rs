@@ -5,7 +5,8 @@
 //! Run modes:
 //! - `cargo run` - TUI in same terminal (default)
 //! - `cargo run -n` - TUI in new terminal window
-//! - `cargo run --web` - Start web server and open browser
+//! - `cargo run --web` - Start web server and open browser (production)
+//! - `cargo run --web --dev` - Start web server with live reload (development)
 
 use axiom::{
     agents::{Conductor, Executor, PtyAgentManager},
@@ -41,6 +42,8 @@ struct Args {
     workspace: Option<String>,
     /// Run in web mode (start server and open browser)
     web: bool,
+    /// Enable development mode with live reload (for --web)
+    dev: bool,
     /// Open TUI in a new terminal window
     new_window: bool,
 }
@@ -52,12 +55,16 @@ impl Args {
         let mut path = None;
         let mut workspace = None;
         let mut web = false;
+        let mut dev = false;
         let mut new_window = false;
 
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--web" | "-W" => {
                     web = true;
+                }
+                "--dev" | "-d" => {
+                    dev = true;
                 }
                 "-n" | "--new-window" => {
                     new_window = true;
@@ -75,7 +82,7 @@ impl Args {
             }
         }
 
-        Self { path, workspace, web, new_window }
+        Self { path, workspace, web, dev, new_window }
     }
 }
 
@@ -212,8 +219,12 @@ fn spawn_in_new_terminal() -> Result<()> {
 /// - Axiom API server on port 8080
 /// - Next.js UI server on port 3000
 /// - Opens browser to http://localhost:3000
+///
+/// With `--dev` flag:
+/// - Uses Next.js dev server with Hot Module Replacement (HMR)
+/// - File changes in web/ auto-reload in browser
 #[cfg(feature = "web")]
-fn run_web(_args: Args) -> Result<()> {
+fn run_web(args: Args) -> Result<()> {
     use std::sync::Mutex;
 
     let api_port: u16 = std::env::var("API_PORT")
@@ -232,47 +243,59 @@ fn run_web(_args: Args) -> Result<()> {
     // Brief pause to allow port release
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    // Start Next.js UI server
     let web_dir = std::path::Path::new("web");
-    let standalone_dir = web_dir.join(".next/standalone");
 
-    if !standalone_dir.exists() {
-        eprintln!("Web UI not built. Building...");
-        let status = std::process::Command::new("npm")
-            .arg("run")
-            .arg("build")
+    // Start Next.js server (dev or production mode)
+    let next_server = if args.dev {
+        // Development mode: use Next.js dev server with HMR
+        println!("Starting in development mode with live reload...");
+        std::process::Command::new("npm")
+            .args(["run", "dev"])
             .current_dir(web_dir)
-            .status()
-            .map_err(|e| axiom::core::AxiomError::Config(format!("Failed to build web UI: {}", e)))?;
+            .env("PORT", ui_port.to_string())
+            .spawn()
+            .map_err(|e| axiom::core::AxiomError::Config(format!("Failed to start dev server: {}", e)))?
+    } else {
+        // Production mode: build and run standalone server
+        let standalone_dir = web_dir.join(".next/standalone");
 
-        if !status.success() {
-            return Err(axiom::core::AxiomError::Config("Failed to build web UI".into()));
+        if !standalone_dir.exists() {
+            eprintln!("Web UI not built. Building...");
+            let status = std::process::Command::new("npm")
+                .arg("run")
+                .arg("build")
+                .current_dir(web_dir)
+                .status()
+                .map_err(|e| axiom::core::AxiomError::Config(format!("Failed to build web UI: {}", e)))?;
+
+            if !status.success() {
+                return Err(axiom::core::AxiomError::Config("Failed to build web UI".into()));
+            }
         }
-    }
 
-    // Copy static files to standalone (Next.js requirement)
-    let static_src = web_dir.join(".next/static");
-    let static_dst = standalone_dir.join(".next/static");
-    if static_src.exists() && !static_dst.exists() {
-        let _ = std::fs::create_dir_all(static_dst.parent().unwrap());
-        copy_dir_recursive(&static_src, &static_dst)?;
-    }
+        // Copy static files to standalone (Next.js requirement)
+        let static_src = web_dir.join(".next/static");
+        let static_dst = standalone_dir.join(".next/static");
+        if static_src.exists() && !static_dst.exists() {
+            let _ = std::fs::create_dir_all(static_dst.parent().unwrap());
+            copy_dir_recursive(&static_src, &static_dst)?;
+        }
 
-    // Copy public folder if it exists
-    let public_src = web_dir.join("public");
-    let public_dst = standalone_dir.join("public");
-    if public_src.exists() && !public_dst.exists() {
-        copy_dir_recursive(&public_src, &public_dst)?;
-    }
+        // Copy public folder if it exists
+        let public_src = web_dir.join("public");
+        let public_dst = standalone_dir.join("public");
+        if public_src.exists() && !public_dst.exists() {
+            copy_dir_recursive(&public_src, &public_dst)?;
+        }
 
-    // Start Next.js server
-    let next_server = std::process::Command::new("node")
-        .arg("server.js")
-        .current_dir(&standalone_dir)
-        .env("PORT", ui_port.to_string())
-        .env("HOSTNAME", "0.0.0.0")
-        .spawn()
-        .map_err(|e| axiom::core::AxiomError::Config(format!("Failed to start UI server: {}", e)))?;
+        std::process::Command::new("node")
+            .arg("server.js")
+            .current_dir(&standalone_dir)
+            .env("PORT", ui_port.to_string())
+            .env("HOSTNAME", "0.0.0.0")
+            .spawn()
+            .map_err(|e| axiom::core::AxiomError::Config(format!("Failed to start UI server: {}", e)))?
+    };
 
     // Use Arc to share next_server handle for cleanup
     let next_server = Arc::new(Mutex::new(Some(next_server)));
@@ -289,8 +312,12 @@ fn run_web(_args: Args) -> Result<()> {
     })
     .ok();
 
-    println!("Starting Axiom UI at http://localhost:{}", ui_port);
+    let mode_label = if args.dev { " (dev)" } else { "" };
+    println!("Starting Axiom UI{} at http://localhost:{}", mode_label, ui_port);
     println!("Starting Axiom API at http://localhost:{}", api_port);
+    if args.dev {
+        println!("Live reload enabled - changes will auto-refresh");
+    }
     println!("Press Ctrl+C to stop");
 
     // Create runtime and run API server
