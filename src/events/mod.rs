@@ -2,6 +2,7 @@
 //!
 //! Uses crossbeam bounded channels for backpressure to prevent memory bloat.
 
+use axiom_core::SlashCommand;
 use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError};
 use crossterm::event::{KeyEvent, MouseEvent};
 use std::path::PathBuf;
@@ -155,6 +156,11 @@ pub enum Event {
         /// The workspace path
         path: PathBuf,
     },
+
+    // ===== Slash Command Events =====
+
+    /// Execute a slash command (e.g., /help, /exit, /settings)
+    SlashCommand(SlashCommand),
 }
 
 /// Event bus using bounded crossbeam channels
@@ -439,5 +445,20 @@ mod tests {
             data: vec![13],
         };
         assert!(matches!(input, Event::CliAgentInput { .. }));
+    }
+
+    #[test]
+    fn test_event_variants_slash_command() {
+        let help = Event::SlashCommand(SlashCommand::Help { command: None });
+        assert!(matches!(help, Event::SlashCommand(SlashCommand::Help { .. })));
+
+        let exit = Event::SlashCommand(SlashCommand::Exit);
+        assert!(matches!(exit, Event::SlashCommand(SlashCommand::Exit)));
+
+        let clear = Event::SlashCommand(SlashCommand::Clear);
+        assert!(matches!(clear, Event::SlashCommand(SlashCommand::Clear)));
+
+        let settings = Event::SlashCommand(SlashCommand::Settings);
+        assert!(matches!(settings, Event::SlashCommand(SlashCommand::Settings)));
     }
 }

@@ -150,6 +150,14 @@ impl OutputPanel {
         }
     }
 
+    /// Clear the output panel (reset to empty state)
+    pub fn clear(&mut self) {
+        self.context = OutputContext::Empty;
+        self.scroll_states.clear();
+        self.file_viewer.clear();
+        self.agent_viewer.clear();
+    }
+
     /// Generate a key for the scroll state map
     fn context_key(&self, ctx: &OutputContext) -> String {
         match ctx {

@@ -2,12 +2,10 @@
 //!
 //! Entry point with proper terminal setup and cleanup.
 //!
-//! The application uses a two-mode launcher system:
-//! - **Launcher mode** (default): Spawns a new terminal window with the TUI
-//! - **TUI mode** (`AXIOM_TUI=1`): Runs the actual TUI application
-//!
-//! This allows `cargo run` to automatically open in a new terminal window,
-//! keeping the original terminal free.
+//! Run modes:
+//! - `cargo run` - TUI in same terminal (default)
+//! - `cargo run -n` - TUI in new terminal window
+//! - `cargo run --web` - Start web server and open browser
 
 use axiom::{
     agents::{Conductor, Executor, PtyAgentManager},
@@ -19,6 +17,10 @@ use axiom::{
     state::{AppState, OutputContext, PanelId, WorkspaceId},
     ui::{self, settings::SettingsAction, workspace_selector::WorkspaceSelectorAction, SelectorMode, toggle_theme, current_variant},
     watcher::FileWatcher,
+};
+use axiom_core::{
+    ModelSubcommand, SlashCommand, SlashCommandData, SlashCommandParser, SlashCommandResult,
+    ThemeSubcommand, UiAction, WorkspaceSubcommand,
 };
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyModifiers},
@@ -37,6 +39,10 @@ struct Args {
     path: Option<PathBuf>,
     /// Workspace ID to open
     workspace: Option<String>,
+    /// Run in web mode (start server and open browser)
+    web: bool,
+    /// Open TUI in a new terminal window
+    new_window: bool,
 }
 
 impl Args {
@@ -45,9 +51,17 @@ impl Args {
         let mut args = std::env::args().skip(1);
         let mut path = None;
         let mut workspace = None;
+        let mut web = false;
+        let mut new_window = false;
 
         while let Some(arg) = args.next() {
             match arg.as_str() {
+                "--web" | "-W" => {
+                    web = true;
+                }
+                "-n" | "--new-window" => {
+                    new_window = true;
+                }
                 "--workspace" | "-w" => {
                     workspace = args.next();
                 }
@@ -61,26 +75,39 @@ impl Args {
             }
         }
 
-        Self { path, workspace }
+        Self { path, workspace, web, new_window }
     }
 }
 
 /// Application entry point.
 ///
-/// Checks if we should run the TUI directly or spawn a new terminal window.
-/// - If `AXIOM_TUI=1` is set, runs the TUI in the current terminal.
-/// - Otherwise, spawns a new terminal window with the TUI.
+/// Determines the run mode based on arguments:
+/// - `--web` / `-W`: Start web server and open browser
+/// - `-n` / `--new-window`: Spawn TUI in a new terminal window
+/// - Default: Run TUI in current terminal
 fn main() -> Result<()> {
-    // If AXIOM_TUI is set, run the actual TUI
+    // If AXIOM_TUI is set, we were spawned by -n flag - run TUI directly
     if std::env::var("AXIOM_TUI").is_ok() {
         return run_tui();
     }
 
-    // Otherwise, spawn a new terminal with the TUI
-    spawn_in_new_terminal()
+    let args = Args::parse();
+
+    if args.web {
+        return run_web(args);
+    }
+
+    if args.new_window {
+        return spawn_in_new_terminal();
+    }
+
+    // Default: run TUI in current terminal
+    run_tui()
 }
 
-/// Spawns the TUI in a new terminal window.
+/// Spawns the TUI in a new terminal window (used with `-n` flag).
+///
+/// Sets `AXIOM_TUI=1` so the spawned process runs TUI directly.
 ///
 /// Platform-specific implementations:
 /// - **macOS**: Uses `osascript` to open Terminal.app
@@ -177,6 +204,159 @@ fn spawn_in_new_terminal() -> Result<()> {
             "Unsupported platform for auto-launch. Use AXIOM_TUI=1 to run directly.".into(),
         ));
     }
+}
+
+/// Runs both the API server and web UI, then opens the browser.
+///
+/// Starts:
+/// - Axiom API server on port 8080
+/// - Next.js UI server on port 3000
+/// - Opens browser to http://localhost:3000
+#[cfg(feature = "web")]
+fn run_web(_args: Args) -> Result<()> {
+    use std::sync::Mutex;
+
+    let api_port: u16 = std::env::var("API_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8080);
+
+    let ui_port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(3000);
+
+    // Kill any existing process on UI port (cleanup from previous run)
+    kill_process_on_port(ui_port);
+
+    // Brief pause to allow port release
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Start Next.js UI server
+    let web_dir = std::path::Path::new("web");
+    let standalone_dir = web_dir.join(".next/standalone");
+
+    if !standalone_dir.exists() {
+        eprintln!("Web UI not built. Building...");
+        let status = std::process::Command::new("npm")
+            .arg("run")
+            .arg("build")
+            .current_dir(web_dir)
+            .status()
+            .map_err(|e| axiom::core::AxiomError::Config(format!("Failed to build web UI: {}", e)))?;
+
+        if !status.success() {
+            return Err(axiom::core::AxiomError::Config("Failed to build web UI".into()));
+        }
+    }
+
+    // Copy static files to standalone (Next.js requirement)
+    let static_src = web_dir.join(".next/static");
+    let static_dst = standalone_dir.join(".next/static");
+    if static_src.exists() && !static_dst.exists() {
+        let _ = std::fs::create_dir_all(static_dst.parent().unwrap());
+        copy_dir_recursive(&static_src, &static_dst)?;
+    }
+
+    // Copy public folder if it exists
+    let public_src = web_dir.join("public");
+    let public_dst = standalone_dir.join("public");
+    if public_src.exists() && !public_dst.exists() {
+        copy_dir_recursive(&public_src, &public_dst)?;
+    }
+
+    // Start Next.js server
+    let next_server = std::process::Command::new("node")
+        .arg("server.js")
+        .current_dir(&standalone_dir)
+        .env("PORT", ui_port.to_string())
+        .env("HOSTNAME", "0.0.0.0")
+        .spawn()
+        .map_err(|e| axiom::core::AxiomError::Config(format!("Failed to start UI server: {}", e)))?;
+
+    // Use Arc to share next_server handle for cleanup
+    let next_server = Arc::new(Mutex::new(Some(next_server)));
+    let next_server_clone = next_server.clone();
+
+    // Register Ctrl+C handler for clean shutdown
+    ctrlc::set_handler(move || {
+        if let Ok(mut guard) = next_server_clone.lock() {
+            if let Some(mut server) = guard.take() {
+                let _ = server.kill();
+            }
+        }
+        std::process::exit(0);
+    })
+    .ok();
+
+    println!("Starting Axiom UI at http://localhost:{}", ui_port);
+    println!("Starting Axiom API at http://localhost:{}", api_port);
+    println!("Press Ctrl+C to stop");
+
+    // Create runtime and run API server
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| axiom::core::AxiomError::Config(format!("Runtime error: {}", e)))?;
+
+    let result = rt.block_on(async {
+        // Open browser after servers start
+        let browser_url = format!("http://localhost:{}", ui_port);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            if let Err(e) = open::that(&browser_url) {
+                eprintln!("Failed to open browser: {}", e);
+            }
+        });
+
+        axiom_server::run_server(api_port)
+            .await
+            .map_err(|e| axiom::core::AxiomError::Config(e.to_string()))
+    });
+
+    // Clean up Next.js server
+    if let Ok(mut guard) = next_server.lock() {
+        if let Some(mut server) = guard.take() {
+            let _ = server.kill();
+        }
+    }
+
+    result
+}
+
+/// Kill any process using the specified port (macOS/Linux)
+#[cfg(feature = "web")]
+fn kill_process_on_port(port: u16) {
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("lsof -ti:{} | xargs kill -9 2>/dev/null", port))
+            .status();
+    }
+}
+
+/// Recursively copy a directory
+#[cfg(feature = "web")]
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Fallback when web feature is not enabled.
+#[cfg(not(feature = "web"))]
+fn run_web(_args: Args) -> Result<()> {
+    eprintln!("Error: Web mode not available.");
+    eprintln!("Rebuild with: cargo build --features web");
+    std::process::exit(1);
 }
 
 /// Runs the TUI application.
@@ -1246,6 +1426,15 @@ fn handle_event(
             panels.handle_workspace_switch(path);
         }
 
+        // ===== Slash Command Events =====
+
+        Event::SlashCommand(ref cmd) => {
+            let result = execute_slash_command(cmd, state, panels, config, pty_manager);
+            if handle_slash_result(result, state, panels, config, screen_area, pty_manager)? {
+                return Ok(true); // Exit requested
+            }
+        }
+
         // Other events
         _ => {}
     }
@@ -1598,5 +1787,286 @@ fn truncate_cmd(s: &str, max_len: usize) -> String {
         s.to_string()
     } else {
         format!("{}...", &s[..max_len.saturating_sub(3)])
+    }
+}
+
+/// Execute a slash command and return the result
+fn execute_slash_command(
+    cmd: &SlashCommand,
+    state: &AppState,
+    panels: &PanelRegistry,
+    config: &AxiomConfig,
+    _pty_manager: &Arc<parking_lot::RwLock<PtyAgentManager>>,
+) -> SlashCommandResult {
+    match cmd {
+        SlashCommand::Help { command } => {
+            if let Some(topic) = command {
+                // Get help for specific command
+                if let Some(help) = SlashCommandParser::get_command_help(topic) {
+                    let mut text = format!("/{} - {}\n\n", help.name, help.description);
+                    text.push_str(&format!("Usage: {}\n", help.usage));
+                    if !help.aliases.is_empty() {
+                        text.push_str(&format!("Aliases: /{}\n", help.aliases.join(", /")));
+                    }
+                    if !help.examples.is_empty() {
+                        text.push_str("\nExamples:\n");
+                        for ex in &help.examples {
+                            text.push_str(&format!("  {}\n", ex));
+                        }
+                    }
+                    SlashCommandResult::data(SlashCommandData::Text(text))
+                } else {
+                    SlashCommandResult::error(format!("Unknown command: {}", topic))
+                }
+            } else {
+                // Get help for all commands
+                let commands = SlashCommandParser::get_all_commands_help();
+                SlashCommandResult::data(SlashCommandData::Help { commands })
+            }
+        }
+
+        SlashCommand::Clear => SlashCommandResult::action(UiAction::ClearOutput),
+
+        SlashCommand::Settings => SlashCommandResult::action(UiAction::OpenSettings),
+
+        SlashCommand::Exit => SlashCommandResult::exit(),
+
+        SlashCommand::Version => {
+            let version = axiom_core::version().to_string();
+            SlashCommandResult::data(SlashCommandData::Version {
+                version,
+                commit: None,
+            })
+        }
+
+        SlashCommand::Init { path } => {
+            // Initialize workspace at the given path or current directory
+            let target_path = path.clone().unwrap_or_else(|| state.cwd.clone());
+            if target_path.exists() && target_path.is_dir() {
+                // Could create a workspace here, but for now just show message
+                SlashCommandResult::success(format!(
+                    "Would initialize workspace at: {}",
+                    target_path.display()
+                ))
+            } else {
+                SlashCommandResult::error(format!("Path does not exist: {}", target_path.display()))
+            }
+        }
+
+        SlashCommand::Workspace(sub) => match sub {
+            WorkspaceSubcommand::List => {
+                if let Some(manager) = &state.workspace_manager {
+                    let workspaces: Vec<axiom_core::WorkspaceInfo> = manager
+                        .list_workspaces()
+                        .iter()
+                        .map(|w| axiom_core::WorkspaceInfo {
+                            id: w.id.to_string(),
+                            name: w.name.clone(),
+                            path: w.path.to_string_lossy().to_string(),
+                            is_active: state.active_workspace_id == Some(w.id),
+                        })
+                        .collect();
+                    SlashCommandResult::data(SlashCommandData::WorkspaceList(workspaces))
+                } else {
+                    SlashCommandResult::error("Workspace manager not initialized")
+                }
+            }
+            WorkspaceSubcommand::Switch { id } => {
+                if id.is_some() {
+                    // Switch to specific workspace - need to parse ID
+                    SlashCommandResult::success("Use /workspace switch to open the selector")
+                } else {
+                    // Open workspace selector
+                    SlashCommandResult::action(UiAction::OpenWorkspaceSelector)
+                }
+            }
+            WorkspaceSubcommand::Create { name, path } => {
+                if let Some(manager) = &state.workspace_manager {
+                    match manager.create_workspace(name, path.clone()) {
+                        Ok(ws) => SlashCommandResult::success(format!("Created workspace: {}", ws.name)),
+                        Err(e) => SlashCommandResult::error(format!("Failed to create workspace: {}", e)),
+                    }
+                } else {
+                    SlashCommandResult::error("Workspace manager not initialized")
+                }
+            }
+        },
+
+        SlashCommand::Model(sub) => match sub {
+            ModelSubcommand::List => {
+                // Open model selector
+                SlashCommandResult::action(UiAction::OpenModelSelector)
+            }
+            ModelSubcommand::Set { model: _ } => {
+                // For now, open the model selector - direct setting requires more work
+                SlashCommandResult::action(UiAction::OpenModelSelector)
+            }
+            ModelSubcommand::Current => {
+                let registry = panels.llm_registry.read();
+                if let Some(provider) = registry.active() {
+                    SlashCommandResult::success(format!(
+                        "Current model: {} ({})",
+                        provider.model(),
+                        provider.id()
+                    ))
+                } else {
+                    SlashCommandResult::error("No model selected")
+                }
+            }
+        },
+
+        SlashCommand::Theme(sub) => match sub {
+            ThemeSubcommand::Toggle => SlashCommandResult::action(UiAction::ToggleTheme),
+            ThemeSubcommand::Set { variant } => {
+                SlashCommandResult::action(UiAction::SetTheme {
+                    variant: variant.clone(),
+                })
+            }
+        },
+
+        SlashCommand::Custom { name, args: _ } => {
+            // Custom commands are not supported yet
+            SlashCommandResult::error(format!("Unknown command: /{}", name))
+        }
+    }
+}
+
+/// Handle the result of a slash command execution
+///
+/// Returns true if the application should exit
+fn handle_slash_result(
+    result: SlashCommandResult,
+    state: &mut AppState,
+    panels: &mut PanelRegistry,
+    config: &mut AxiomConfig,
+    screen_area: ratatui::layout::Rect,
+    pty_manager: &Arc<parking_lot::RwLock<PtyAgentManager>>,
+) -> Result<bool> {
+    match result {
+        SlashCommandResult::Success { message } => {
+            if let Some(msg) = message {
+                state.info(msg);
+            }
+            Ok(false)
+        }
+
+        SlashCommandResult::UiAction(action) => {
+            match action {
+                UiAction::OpenSettings => {
+                    panels.open_settings(config);
+                    state.input_mode.open_modal("settings");
+                }
+                UiAction::OpenModelSelector => {
+                    panels.open_model_selector();
+                    state.input_mode.open_modal("model_selector");
+                }
+                UiAction::OpenWorkspaceSelector => {
+                    if let Some(manager) = &state.workspace_manager {
+                        let workspaces = manager.list_workspaces();
+                        panels.open_workspace_selector(workspaces, state.active_workspace_id);
+                        state.input_mode.open_modal("workspace_selector");
+                    } else {
+                        state.error("Workspace manager not initialized");
+                    }
+                }
+                UiAction::ClearOutput => {
+                    panels.clear_output();
+                    state.info("Output cleared");
+                }
+                UiAction::ToggleTheme => {
+                    toggle_theme();
+                    state.info(format!("Theme: {}", current_variant().as_str()));
+                }
+                UiAction::SetTheme { variant } => {
+                    // For now, just toggle - specific theme setting requires more work
+                    if variant == "dark" || variant == "light" {
+                        let current = current_variant().as_str();
+                        if (variant == "dark" && current != "dark")
+                            || (variant == "light" && current != "light")
+                        {
+                            toggle_theme();
+                        }
+                        state.info(format!("Theme: {}", current_variant().as_str()));
+                    } else {
+                        state.error(format!("Unknown theme variant: {}", variant));
+                    }
+                }
+                UiAction::FocusPanel { panel } => {
+                    // Map panel name to PanelId
+                    let panel_id = match panel.to_lowercase().as_str() {
+                        "input" => Some(PanelId::INPUT),
+                        "output" => Some(PanelId::OUTPUT),
+                        "agents" => Some(PanelId::AGENTS),
+                        "filetree" | "file_tree" | "files" => Some(PanelId::FILE_TREE),
+                        _ => None,
+                    };
+                    if let Some(id) = panel_id {
+                        state.focus.focus(id);
+                        panels.handle_focus_change(id, screen_area);
+                    } else {
+                        state.error(format!("Unknown panel: {}", panel));
+                    }
+                }
+            }
+            Ok(false)
+        }
+
+        SlashCommandResult::Data(data) => {
+            match data {
+                SlashCommandData::Help { commands } => {
+                    let mut text = String::from("Available commands:\n\n");
+                    for cmd in commands {
+                        text.push_str(&format!(
+                            "  /{:<12} {}\n",
+                            cmd.name, cmd.description
+                        ));
+                    }
+                    text.push_str("\nUse /help <command> for more details.");
+                    state.info(text);
+                }
+                SlashCommandData::Version { version, commit } => {
+                    let msg = if let Some(hash) = commit {
+                        format!("Axiom v{} ({})", version, hash)
+                    } else {
+                        format!("Axiom v{}", version)
+                    };
+                    state.info(msg);
+                }
+                SlashCommandData::WorkspaceList(workspaces) => {
+                    if workspaces.is_empty() {
+                        state.info("No workspaces found. Use /workspace create <name> <path> to create one.");
+                    } else {
+                        let mut text = String::from("Workspaces:\n\n");
+                        for ws in workspaces {
+                            let marker = if ws.is_active { " *" } else { "" };
+                            text.push_str(&format!("  {}{} - {}\n", ws.name, marker, ws.path));
+                        }
+                        state.info(text);
+                    }
+                }
+                SlashCommandData::ModelList { provider, models, active } => {
+                    let mut text = format!("Models for {}:\n\n", provider);
+                    for model in models {
+                        let marker = if active.as_ref() == Some(&model) { " *" } else { "" };
+                        text.push_str(&format!("  {}{}\n", model, marker));
+                    }
+                    state.info(text);
+                }
+                SlashCommandData::Text(text) => {
+                    state.info(text);
+                }
+            }
+            Ok(false)
+        }
+
+        SlashCommandResult::Error { message } => {
+            state.error(message);
+            Ok(false)
+        }
+
+        SlashCommandResult::Exit => {
+            state.quit();
+            Ok(true)
+        }
     }
 }

@@ -3,6 +3,8 @@
 //! These commands represent all actions a UI can request from the backend.
 //! They are serializable for web UI integration over WebSocket/gRPC.
 
+pub mod slash;
+
 use crate::types::AgentId;
 use crate::workspace::WorkspaceId;
 use serde::{Deserialize, Serialize};
@@ -124,6 +126,16 @@ pub enum Command {
     ///
     /// Gracefully shuts down all agents and services.
     Shutdown,
+
+    // ========== Slash Commands ==========
+
+    /// Execute a slash command
+    ///
+    /// Slash commands are user-facing commands that start with "/" (e.g., /help, /exit).
+    SlashCommand {
+        /// The parsed slash command
+        command: slash::SlashCommand,
+    },
 
     // ========== Workspace Commands ==========
 
@@ -265,6 +277,11 @@ impl Command {
             path: path.into(),
             include_hidden: false,
         }
+    }
+
+    /// Create a SlashCommand command
+    pub fn slash_command(command: slash::SlashCommand) -> Self {
+        Command::SlashCommand { command }
     }
 }
 

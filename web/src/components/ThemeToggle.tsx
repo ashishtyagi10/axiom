@@ -6,7 +6,19 @@ import { useTheme } from "next-themes"
 import { cn } from "@/lib/utils"
 
 export function ThemeToggle({ className }: { className?: string }) {
+  const [mounted, setMounted] = React.useState(false)
   const { theme, setTheme } = useTheme()
+
+  // Avoid hydration mismatch in Safari
+  React.useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  if (!mounted) {
+    return (
+      <div className={cn("p-2 rounded-full w-[2.5rem] h-[2.5rem]", className)} />
+    )
+  }
 
   return (
     <button

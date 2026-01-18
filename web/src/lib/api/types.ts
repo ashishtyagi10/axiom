@@ -33,6 +33,7 @@ export interface FileEntry {
   name: string;
   path: string;
   is_directory: boolean;
+  isDirectory: boolean; // Alias for compatibility with fs.ts
   size: number;
   modified?: number;
   is_hidden?: boolean;
@@ -66,7 +67,8 @@ export type Command =
   | { type: 'CreateWorkspace'; name: string; path: string }
   | { type: 'DeleteWorkspace'; workspace_id: string }
   | { type: 'ActivateWorkspace'; workspace_id: string }
-  | { type: 'ListFiles'; path: string; include_hidden: boolean };
+  | { type: 'ListFiles'; path: string; include_hidden: boolean }
+  | { type: 'SlashCommand'; command: SlashCommand };
 
 // Notification Types (received from backend via WebSocket)
 export type Notification =
@@ -83,7 +85,8 @@ export type Notification =
   | { type: 'WorkspaceCreated'; workspace: Workspace }
   | { type: 'WorkspaceDeleted'; workspace_id: string }
   | { type: 'WorkspaceActivated'; workspace: Workspace }
-  | { type: 'FileList'; path: string; entries: FileEntry[] };
+  | { type: 'FileList'; path: string; entries: FileEntry[] }
+  | { type: 'SlashCommandResult'; result: SlashCommandResult };
 
 // Terminal Types
 export interface TerminalLine {
@@ -125,3 +128,69 @@ export interface ApiResponse<T> {
   data?: T;
   error?: string;
 }
+
+// ========== Slash Command Types ==========
+
+export type WorkspaceSubcommand =
+  | { subcommand: 'List' }
+  | { subcommand: 'Switch'; id?: string }
+  | { subcommand: 'Create'; name: string; path: string };
+
+export type ModelSubcommand =
+  | { subcommand: 'List' }
+  | { subcommand: 'Set'; model: string }
+  | { subcommand: 'Current' };
+
+export type ThemeSubcommand =
+  | { subcommand: 'Toggle' }
+  | { subcommand: 'Set'; variant: string };
+
+export type SlashCommand =
+  | { type: 'Help'; args: { command?: string } }
+  | { type: 'Clear' }
+  | { type: 'Settings' }
+  | { type: 'Exit' }
+  | { type: 'Version' }
+  | { type: 'Init'; args: { path?: string } }
+  | { type: 'Workspace'; args: WorkspaceSubcommand }
+  | { type: 'Model'; args: ModelSubcommand }
+  | { type: 'Theme'; args: ThemeSubcommand }
+  | { type: 'Custom'; args: { name: string; args: string[] } };
+
+export type UiAction =
+  | { action: 'OpenSettings' }
+  | { action: 'OpenModelSelector' }
+  | { action: 'OpenWorkspaceSelector' }
+  | { action: 'ClearOutput' }
+  | { action: 'ToggleTheme' }
+  | { action: 'SetTheme'; variant: string }
+  | { action: 'FocusPanel'; panel: string };
+
+export interface CommandHelp {
+  name: string;
+  aliases: string[];
+  description: string;
+  usage: string;
+  examples: string[];
+}
+
+export interface WorkspaceInfo {
+  id: string;
+  name: string;
+  path: string;
+  is_active: boolean;
+}
+
+export type SlashCommandData =
+  | { data_type: 'Help'; value: { commands: CommandHelp[] } }
+  | { data_type: 'Version'; value: { version: string; commit?: string } }
+  | { data_type: 'WorkspaceList'; value: WorkspaceInfo[] }
+  | { data_type: 'ModelList'; value: { provider: string; models: string[]; active?: string } }
+  | { data_type: 'Text'; value: string };
+
+export type SlashCommandResult =
+  | { type: 'Success'; message?: string }
+  | { type: 'UiAction'; action: UiAction }
+  | { type: 'Data'; data: SlashCommandData }
+  | { type: 'Error'; message: string }
+  | { type: 'Exit' };

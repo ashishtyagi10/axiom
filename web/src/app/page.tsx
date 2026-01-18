@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 import Link from 'next/link';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { getWorkspacesAction, addWorkspaceAction } from '@/app/actions/workspace';
-import { WorkspaceConfig } from '@/lib/workspace-config';
+import { WorkspaceConfig } from '@/lib/types';
 import { FilePickerModal } from '@/components/FilePickerModal';
 import { SettingsModal } from '@/components/SettingsModal';
 

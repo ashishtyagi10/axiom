@@ -293,6 +293,13 @@ impl AxiomService {
             Command::ListFiles { path, include_hidden } => {
                 self.list_files(path, include_hidden)?;
             }
+            Command::SlashCommand { command } => {
+                // Slash commands are handled by the TUI/UI layer directly
+                // When used via backend API, just log them for now
+                let _ = self.notification_tx.send(Notification::Info {
+                    message: format!("SlashCommand: {}", command.name()),
+                });
+            }
         }
         Ok(())
     }

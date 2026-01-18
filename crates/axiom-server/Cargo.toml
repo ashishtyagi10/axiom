@@ -6,6 +6,10 @@ description = "HTTP/WebSocket server for Axiom - serves Web UI"
 authors = ["atyagi"]
 license = "MIT"
 
+[lib]
+name = "axiom_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "axiom-server"
 path = "src/main.rs"

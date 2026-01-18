@@ -2,6 +2,7 @@
 //!
 //! Provides efficient syntax highlighting with per-line caching.
 
+use crate::ui::theme::{current_variant, ThemeVariant};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::path::Path;
@@ -16,9 +17,6 @@ pub struct Highlighter {
 
     /// Color themes
     theme_set: ThemeSet,
-
-    /// Current theme name
-    theme_name: String,
 }
 
 impl Default for Highlighter {
@@ -33,7 +31,14 @@ impl Highlighter {
         Self {
             syntax_set: SyntaxSet::load_defaults_newlines(),
             theme_set: ThemeSet::load_defaults(),
-            theme_name: "base16-ocean.dark".to_string(),
+        }
+    }
+
+    /// Get the appropriate syntect theme name based on the app theme
+    fn theme_name(&self) -> &str {
+        match current_variant() {
+            ThemeVariant::Light => "base16-ocean.light",
+            ThemeVariant::Dark | ThemeVariant::System => "base16-ocean.dark",
         }
     }
 
@@ -64,7 +69,7 @@ impl Highlighter {
         let theme = self
             .theme_set
             .themes
-            .get(&self.theme_name)
+            .get(self.theme_name())
             .unwrap_or_else(|| self.theme_set.themes.values().next().unwrap());
 
         let mut highlighter = HighlightLines::new(syntax, theme);

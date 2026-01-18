@@ -5,7 +5,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { X, Save, Key, Cpu, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getLLMSettingsAction, updateProviderAction, updateAgentMappingAction } from '@/app/actions/llm';
-import { LLMProvider, AgentMapping } from '@/lib/workspace-config';
+import { LLMProvider, AgentMapping } from '@/lib/types';
 
 interface SettingsModalProps {
   isOpen: boolean;

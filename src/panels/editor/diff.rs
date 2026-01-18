@@ -3,7 +3,8 @@
 //! Tracks original content vs modified content and provides
 //! git-style diff visualization in the editor.
 
-use ratatui::style::{Color, Style};
+use crate::ui::theme::theme;
+use ratatui::style::Style;
 use std::collections::HashMap;
 
 /// Type of change for a line
@@ -32,20 +33,22 @@ impl LineChange {
 
     /// Get the gutter style
     pub fn gutter_style(&self) -> Style {
+        let t = theme();
         match self {
-            LineChange::Added => Style::default().fg(Color::Green),
-            LineChange::Removed => Style::default().fg(Color::Red),
-            LineChange::Modified => Style::default().fg(Color::Yellow),
-            LineChange::Unchanged => Style::default().fg(Color::DarkGray),
+            LineChange::Added => Style::default().fg(t.diff_added_fg),
+            LineChange::Removed => Style::default().fg(t.diff_removed_fg),
+            LineChange::Modified => Style::default().fg(t.diff_modified_fg),
+            LineChange::Unchanged => Style::default().fg(t.text_muted),
         }
     }
 
     /// Get the line background style
     pub fn line_bg_style(&self) -> Option<Style> {
+        let t = theme();
         match self {
-            LineChange::Added => Some(Style::default().bg(Color::Rgb(30, 50, 30))),
-            LineChange::Removed => Some(Style::default().bg(Color::Rgb(50, 30, 30))),
-            LineChange::Modified => Some(Style::default().bg(Color::Rgb(50, 50, 30))),
+            LineChange::Added => Some(Style::default().bg(t.diff_added_bg)),
+            LineChange::Removed => Some(Style::default().bg(t.diff_removed_bg)),
+            LineChange::Modified => Some(Style::default().bg(t.diff_modified_bg)),
             LineChange::Unchanged => None,
         }
     }

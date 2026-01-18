@@ -67,10 +67,11 @@ impl FileViewer {
                 self.highlighted = self.highlighter.highlight_all(&self.lines, Some(path));
             }
             Err(e) => {
+                let t = theme();
                 self.lines = vec![format!("Error reading file: {}", e)];
                 self.highlighted = vec![vec![(
                     self.lines[0].clone(),
-                    Style::default().fg(Color::Red),
+                    Style::default().fg(t.status_error),
                 )]];
             }
         }
@@ -117,6 +118,14 @@ impl FileViewer {
     /// Get total line count
     pub fn line_count(&self) -> usize {
         self.lines.len()
+    }
+
+    /// Clear the viewer
+    pub fn clear(&mut self) {
+        self.lines.clear();
+        self.highlighted.clear();
+        self.scroll_offset = 0;
+        self.current_path = None;
     }
 
     /// Render the file content

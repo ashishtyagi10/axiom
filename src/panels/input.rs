@@ -1,10 +1,12 @@
 //! Input panel for unified command entry
 //!
 //! Handles user input with prefix-based routing:
+//! - `/command` → Slash commands (e.g., /help, /exit, /settings)
 //! - Plain text → LLM conductor
 //! - `!command` or `:command` → Shell execution
 //! - `#agent prompt` → CLI agent invocation (e.g., #claude, #gemini)
 
+use axiom_core::{SlashCommand, SlashCommandParser};
 use crate::clipboard;
 use crate::config::CliAgentsConfig;
 use crate::core::Result;
@@ -27,6 +29,9 @@ use std::sync::Arc;
 /// Parsed input command
 #[derive(Debug, Clone)]
 pub enum InputCommand {
+    /// Slash command (prefixed with /)
+    Slash(SlashCommand),
+
     /// Chat message to conductor
     Chat(String),
 
@@ -55,6 +60,17 @@ impl InputCommand {
         let trimmed = input.trim();
         if trimmed.is_empty() {
             return InputCommand::Empty;
+        }
+
+        // Check for slash command FIRST (highest priority)
+        if let Some(result) = SlashCommandParser::parse(trimmed) {
+            match result {
+                Ok(cmd) => return InputCommand::Slash(cmd),
+                Err(_) => {
+                    // Parse error - fall through to treat as chat
+                    // This allows users to type things like "/ is a path separator"
+                }
+            }
         }
 
         // Check for CLI agent prefix (#agent)
@@ -363,6 +379,9 @@ impl InputPanel {
 
         // Send appropriate event
         match command {
+            InputCommand::Slash(cmd) => {
+                let _ = self.event_tx.send(Event::SlashCommand(cmd));
+            }
             InputCommand::Chat(text) => {
                 let _ = self.event_tx.send(Event::ConductorRequest(text));
             }
@@ -420,7 +439,9 @@ impl InputPanel {
     fn prompt(&self) -> (&'static str, Style) {
         let t = theme();
         let trimmed = self.input.trim_start();
-        if trimmed.starts_with('!') || trimmed.starts_with(':') {
+        if trimmed.starts_with('/') {
+            ("/ ", Style::default().fg(t.text_muted))
+        } else if trimmed.starts_with('!') || trimmed.starts_with(':') {
             ("$ ", Style::default().fg(t.accent_highlight))
         } else if trimmed.starts_with('#') {
             ("# ", Style::default().fg(t.accent_secondary))
@@ -803,5 +824,103 @@ mod tests {
         };
         let cloned = cmd.clone();
         assert!(matches!(cloned, InputCommand::CliAgent { agent_id, .. } if agent_id == "claude"));
+    }
+
+    // ==================== Slash Commands ====================
+
+    #[test]
+    fn test_parse_slash_help() {
+        let cmd = InputCommand::parse_simple("/help");
+        assert!(matches!(cmd, InputCommand::Slash(SlashCommand::Help { command: None })));
+    }
+
+    #[test]
+    fn test_parse_slash_help_with_topic() {
+        let cmd = InputCommand::parse_simple("/help workspace");
+        assert!(matches!(
+            cmd,
+            InputCommand::Slash(SlashCommand::Help { command: Some(topic) }) if topic == "workspace"
+        ));
+    }
+
+    #[test]
+    fn test_parse_slash_exit() {
+        let cmd = InputCommand::parse_simple("/exit");
+        assert!(matches!(cmd, InputCommand::Slash(SlashCommand::Exit)));
+    }
+
+    #[test]
+    fn test_parse_slash_quit() {
+        let cmd = InputCommand::parse_simple("/quit");
+        assert!(matches!(cmd, InputCommand::Slash(SlashCommand::Exit)));
+    }
+
+    #[test]
+    fn test_parse_slash_q() {
+        let cmd = InputCommand::parse_simple("/q");
+        assert!(matches!(cmd, InputCommand::Slash(SlashCommand::Exit)));
+    }
+
+    #[test]
+    fn test_parse_slash_clear() {
+        let cmd = InputCommand::parse_simple("/clear");
+        assert!(matches!(cmd, InputCommand::Slash(SlashCommand::Clear)));
+    }
+
+    #[test]
+    fn test_parse_slash_settings() {
+        let cmd = InputCommand::parse_simple("/settings");
+        assert!(matches!(cmd, InputCommand::Slash(SlashCommand::Settings)));
+    }
+
+    #[test]
+    fn test_parse_slash_version() {
+        let cmd = InputCommand::parse_simple("/version");
+        assert!(matches!(cmd, InputCommand::Slash(SlashCommand::Version)));
+    }
+
+    #[test]
+    fn test_parse_slash_theme_toggle() {
+        let cmd = InputCommand::parse_simple("/theme toggle");
+        assert!(matches!(
+            cmd,
+            InputCommand::Slash(SlashCommand::Theme(axiom_core::ThemeSubcommand::Toggle))
+        ));
+    }
+
+    #[test]
+    fn test_parse_slash_model_list() {
+        let cmd = InputCommand::parse_simple("/model list");
+        assert!(matches!(
+            cmd,
+            InputCommand::Slash(SlashCommand::Model(axiom_core::ModelSubcommand::List))
+        ));
+    }
+
+    #[test]
+    fn test_parse_slash_workspace_list() {
+        let cmd = InputCommand::parse_simple("/workspace list");
+        assert!(matches!(
+            cmd,
+            InputCommand::Slash(SlashCommand::Workspace(axiom_core::WorkspaceSubcommand::List))
+        ));
+    }
+
+    #[test]
+    fn test_parse_slash_custom() {
+        let cmd = InputCommand::parse_simple("/mycustom arg1 arg2");
+        if let InputCommand::Slash(SlashCommand::Custom { name, args }) = cmd {
+            assert_eq!(name, "mycustom");
+            assert_eq!(args, vec!["arg1", "arg2"]);
+        } else {
+            panic!("Expected custom slash command");
+        }
+    }
+
+    #[test]
+    fn test_slash_takes_priority_over_chat() {
+        // Slash commands should be parsed before chat
+        let cmd = InputCommand::parse_simple("/help");
+        assert!(matches!(cmd, InputCommand::Slash(_)));
     }
 }

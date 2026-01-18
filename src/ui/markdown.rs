@@ -289,14 +289,15 @@ impl MarkdownRenderer {
 
     /// Render an Axiom response as a left-aligned box
     fn render_axiom_message_box(&mut self, text: &str) {
-        // Styles - teal/cyan theme for Axiom
+        // Styles using theme - cyan/teal accent for Axiom
+        let t = theme();
         let header_style = Style::default()
-            .fg(Color::Rgb(80, 200, 180))
+            .fg(t.status_success)
             .add_modifier(Modifier::BOLD);
         let border_style = Style::default()
-            .fg(Color::Rgb(60, 80, 70));
+            .fg(t.border_unfocused);
         let text_style = Style::default()
-            .fg(Color::Rgb(220, 220, 220));
+            .fg(t.text_primary);
 
         // Header with Axiom label
         self.lines.push(Line::from(vec![
@@ -362,10 +363,11 @@ impl MarkdownRenderer {
                 Event::End(tag) => self.handle_end_tag(tag),
                 Event::Text(text) => self.add_text(&text),
                 Event::Code(code) => {
-                    // Inline code
+                    // Inline code - use theme colors
+                    let t = theme();
                     let style = Style::default()
-                        .fg(Color::Rgb(230, 180, 80))
-                        .bg(Color::Rgb(50, 50, 50));
+                        .fg(t.accent_highlight)
+                        .bg(t.code_bg);
                     self.current_line.push(Span::styled(format!("`{}`", code), style));
                 }
                 Event::SoftBreak => {
@@ -376,9 +378,10 @@ impl MarkdownRenderer {
                 }
                 Event::Rule => {
                     self.flush_line();
+                    let t = theme();
                     self.lines.push(Line::from(Span::styled(
                         "─".repeat(40),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(t.text_muted),
                     )));
                 }
                 _ => {}
@@ -387,18 +390,19 @@ impl MarkdownRenderer {
     }
 
     fn handle_start_tag(&mut self, tag: Tag) {
+        let t = theme();
         match tag {
             Tag::Heading { level, .. } => {
                 self.flush_line();
                 let style = match level {
                     pulldown_cmark::HeadingLevel::H1 => Style::default()
-                        .fg(Color::Cyan)
+                        .fg(t.accent_primary)
                         .add_modifier(Modifier::BOLD),
                     pulldown_cmark::HeadingLevel::H2 => Style::default()
-                        .fg(Color::Blue)
+                        .fg(t.status_info)
                         .add_modifier(Modifier::BOLD),
                     _ => Style::default()
-                        .fg(Color::Magenta)
+                        .fg(t.accent_secondary)
                         .add_modifier(Modifier::BOLD),
                 };
                 self.push_style(style);
@@ -412,7 +416,7 @@ impl MarkdownRenderer {
                 };
                 self.current_line.push(Span::styled(
                     prefix.to_string(),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(t.text_muted),
                 ));
             }
             Tag::Paragraph => {
@@ -422,10 +426,10 @@ impl MarkdownRenderer {
             }
             Tag::BlockQuote => {
                 self.flush_line();
-                self.push_style(Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC));
+                self.push_style(Style::default().fg(t.text_secondary).add_modifier(Modifier::ITALIC));
                 self.current_line.push(Span::styled(
                     "│ ".to_string(),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(t.text_muted),
                 ));
             }
             Tag::CodeBlock(kind) => {
@@ -460,7 +464,7 @@ impl MarkdownRenderer {
                 };
                 self.current_line.push(Span::styled(
                     format!("{}{}", indent, bullet),
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(t.accent_highlight),
                 ));
             }
             Tag::Emphasis => {
@@ -473,7 +477,7 @@ impl MarkdownRenderer {
                 self.push_style(self.current_style().add_modifier(Modifier::CROSSED_OUT));
             }
             Tag::Link { dest_url, .. } => {
-                self.push_style(Style::default().fg(Color::Blue).add_modifier(Modifier::UNDERLINED));
+                self.push_style(Style::default().fg(t.accent_primary).add_modifier(Modifier::UNDERLINED));
                 // Store the URL to show after link text
             }
             _ => {}

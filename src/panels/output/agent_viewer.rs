@@ -83,6 +83,16 @@ impl AgentViewer {
         self.scroll_offset = (self.scroll_offset + lines).min(self.max_scroll());
     }
 
+    /// Clear the viewer (reset state)
+    pub fn clear(&mut self) {
+        self.scroll_offset = 0;
+        self.cached_lines.clear();
+        self.cached_line_count = 0;
+        self.last_output_len = 0;
+        self.last_agent_id = None;
+        self.last_children_len = 0;
+    }
+
     /// Build a spinner character based on elapsed time
     fn spinner(elapsed_ms: u128) -> char {
         const FRAMES: [char; 8] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];

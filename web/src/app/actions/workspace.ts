@@ -97,7 +97,11 @@ export async function removeWorkspaceAction(id: string): Promise<void> {
 export async function listFilesAction(workspaceId: string, path?: string): Promise<FileEntry[]> {
   try {
     const response = await axiomApi.listFiles(workspaceId, path);
-    return response.entries;
+    // Normalize: add isDirectory alias for is_directory
+    return response.entries.map(entry => ({
+      ...entry,
+      isDirectory: entry.is_directory,
+    }));
   } catch (error) {
     console.error('Failed to list files:', error);
     return [];

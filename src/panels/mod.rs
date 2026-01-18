@@ -155,6 +155,11 @@ impl PanelRegistry {
         self.output.context()
     }
 
+    /// Clear the output panel
+    pub fn clear_output(&mut self) {
+        self.output.clear();
+    }
+
     /// Open the settings modal with current configuration
     pub fn open_settings(&mut self, config: &AxiomConfig) {
         self.settings = SettingsModal::new(config);

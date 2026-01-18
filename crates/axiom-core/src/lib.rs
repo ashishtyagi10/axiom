@@ -64,6 +64,11 @@ pub mod orchestration;
 
 // Re-export commonly used types
 pub use commands::Command;
+pub use commands::slash::{
+    CommandHelp, ModelSubcommand, ParseError as SlashParseError, SlashCommand,
+    SlashCommandData, SlashCommandParser, SlashCommandResult, ThemeSubcommand, UiAction,
+    WorkspaceInfo, WorkspaceSubcommand,
+};
 pub use error::{AxiomError, Result};
 pub use notifications::{FileEntry, Notification};
 pub use types::{

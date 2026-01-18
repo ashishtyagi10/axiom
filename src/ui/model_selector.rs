@@ -1,8 +1,9 @@
 //! Model selector modal for choosing LLM models
 
+use crate::ui::theme::theme;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
@@ -135,12 +136,14 @@ impl ModelSelector {
         // Clear the background
         frame.render_widget(Clear, modal_area);
 
+        let t = theme();
+
         // Modal block
         let block = Block::default()
             .title(" Select Model (↑↓ Enter Esc) ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .style(Style::default().bg(Color::Rgb(30, 30, 40)));
+            .border_style(Style::default().fg(t.border_focused))
+            .style(Style::default().bg(t.bg_modal));
 
         let inner = block.inner(modal_area);
         frame.render_widget(block, modal_area);
@@ -148,7 +151,7 @@ impl ModelSelector {
         // Content based on state
         if self.loading {
             let loading = Paragraph::new("Loading models...")
-                .style(Style::default().fg(Color::Yellow))
+                .style(Style::default().fg(t.status_warning))
                 .alignment(Alignment::Center);
             frame.render_widget(loading, inner);
             return;
@@ -156,7 +159,7 @@ impl ModelSelector {
 
         if let Some(ref error) = self.error {
             let error_text = Paragraph::new(error.as_str())
-                .style(Style::default().fg(Color::Red))
+                .style(Style::default().fg(t.status_error))
                 .alignment(Alignment::Center);
             frame.render_widget(error_text, inner);
             return;
@@ -164,7 +167,7 @@ impl ModelSelector {
 
         if self.models.is_empty() {
             let empty = Paragraph::new("No models available")
-                .style(Style::default().fg(Color::Gray))
+                .style(Style::default().fg(t.text_muted))
                 .alignment(Alignment::Center);
             frame.render_widget(empty, inner);
             return;
@@ -190,13 +193,13 @@ impl ModelSelector {
 
                 let style = if i == self.selected {
                     Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
+                        .fg(t.text_inverse)
+                        .bg(t.accent_primary)
                         .add_modifier(Modifier::BOLD)
                 } else if is_current {
-                    Style::default().fg(Color::Green)
+                    Style::default().fg(t.status_success)
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(t.text_primary)
                 };
 
                 ListItem::new(Line::from(Span::styled(
@@ -210,13 +213,13 @@ impl ModelSelector {
         list_state.select(Some(self.selected));
 
         let list = List::new(items)
-            .highlight_style(Style::default().bg(Color::Cyan).fg(Color::Black));
+            .highlight_style(Style::default().bg(t.accent_primary).fg(t.text_inverse));
 
         frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
         // Help text
         let help = Paragraph::new("● = current model")
-            .style(Style::default().fg(Color::DarkGray))
+            .style(Style::default().fg(t.text_muted))
             .alignment(Alignment::Center);
         frame.render_widget(help, chunks[1]);
     }

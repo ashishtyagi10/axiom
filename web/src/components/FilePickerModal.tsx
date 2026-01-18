@@ -4,8 +4,7 @@ import React, { useState, useEffect } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { X, Folder, ChevronUp, Loader2, HardDrive } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { listFilesAction, getHomeDirAction } from '@/app/actions/workspace';
-import { FileEntry } from '@/lib/fs';
+import { listDirectories, getHomeDirectory, DirectoryEntry } from '@/app/actions/files';
 
 interface FilePickerModalProps {
   isOpen: boolean;
@@ -15,7 +14,7 @@ interface FilePickerModalProps {
 
 export function FilePickerModal({ isOpen, onOpenChange, onSelect }: FilePickerModalProps) {
   const [currentPath, setCurrentPath] = useState<string>('');
-  const [entries, setEntries] = useState<FileEntry[]>([]);
+  const [entries, setEntries] = useState<DirectoryEntry[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,7 +28,7 @@ export function FilePickerModal({ isOpen, onOpenChange, onSelect }: FilePickerMo
   const loadHomeDir = async () => {
     try {
       setIsLoading(true);
-      const home = await getHomeDirAction();
+      const home = await getHomeDirectory();
       setCurrentPath(home);
       await loadDirectory(home);
     } catch (err) {
@@ -43,12 +42,7 @@ export function FilePickerModal({ isOpen, onOpenChange, onSelect }: FilePickerMo
     try {
       setIsLoading(true);
       setError(null);
-      const files = await listFilesAction(path);
-      // Filter for directories only and sort
-      const dirs = files
-        .filter(f => f.isDirectory)
-        .sort((a, b) => a.name.localeCompare(b.name));
-      
+      const dirs = await listDirectories(path);
       setEntries(dirs);
       setCurrentPath(path);
     } catch (err) {
