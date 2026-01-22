@@ -3,15 +3,17 @@
 //! Each panel implements the Panel trait for consistent behavior.
 //! Panels use AxiomService for backend operations via Commands.
 
+mod agents;
 mod file_tree;
 mod input;
 mod output;
-mod agents;
+mod ralph;
 
+pub use agents::AgentsPanel;
 pub use file_tree::FileTreePanel;
 pub use input::InputPanel;
 pub use output::OutputPanel;
-pub use agents::AgentsPanel;
+pub use ralph::RalphPanel;
 
 use crate::events::TuiEvent;
 use crate::state::{AppState, PanelId};

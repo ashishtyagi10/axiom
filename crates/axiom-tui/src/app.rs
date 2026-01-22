@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::events::TuiEvent;
-use crate::panels::{AgentsPanel, FileTreePanel, InputPanel, OutputPanel, Panel};
+use crate::panels::{AgentsPanel, FileTreePanel, InputPanel, OutputPanel, Panel, RalphPanel};
 use crate::state::{AppState, MessageLevel, PanelId};
 
 /// Main TUI application
@@ -29,6 +29,7 @@ pub struct TuiApp {
     output: OutputPanel,
     input: InputPanel,
     agents: AgentsPanel,
+    ralph: RalphPanel,
 }
 
 impl TuiApp {
@@ -43,6 +44,7 @@ impl TuiApp {
             output: OutputPanel::new(),
             input: InputPanel::new(),
             agents: AgentsPanel::new(),
+            ralph: RalphPanel::new(),
         })
     }
 
@@ -55,6 +57,8 @@ impl TuiApp {
             // Update panels from service
             self.output.update_from_service(&self.service);
             self.agents.update_from_service(&self.service);
+            self.ralph.update_from_service(&self.service);
+            self.ralph.tick(); // Update animation
 
             // Process pending actions from panels
             self.process_panel_actions()?;
@@ -186,6 +190,7 @@ impl TuiApp {
             }
             PanelId::AGENTS => self.agents.handle_input(&tui_event, &mut self.state)?,
             PanelId::FILE_TREE => self.file_tree.handle_input(&tui_event, &mut self.state)?,
+            PanelId::RALPH => self.ralph.handle_input(&tui_event, &mut self.state)?,
             _ => false,
         };
 
@@ -215,6 +220,7 @@ impl TuiApp {
         self.output.on_resize(cols, rows);
         self.input.on_resize(cols, rows);
         self.agents.on_resize(cols, rows);
+        self.ralph.on_resize(cols, rows);
         Ok(())
     }
 
@@ -260,6 +266,24 @@ impl TuiApp {
             Notification::Info { message } => {
                 self.state.info(message);
             }
+            Notification::RalphIterationStarted { iteration, task } => {
+                self.state.info(format!("Ralph iteration {} started: {}", iteration, task));
+            }
+            Notification::RalphIterationComplete { iteration, summary, .. } => {
+                self.state.info(format!("Ralph iteration {} complete: {}", iteration, summary));
+            }
+            Notification::RalphLoopComplete { total_iterations, reason } => {
+                self.state.info(format!(
+                    "Ralph Loop complete: {} iterations, {:?}",
+                    total_iterations, reason
+                ));
+            }
+            Notification::RalphLoopError { iteration, error } => {
+                self.state.error(format!("Ralph iteration {}: {}", iteration, error));
+            }
+            Notification::RalphStatusUpdate { .. } => {
+                // Status updates are handled by panel update
+            }
             _ => {}
         }
     }
@@ -274,7 +298,7 @@ impl TuiApp {
             .constraints([
                 Constraint::Percentage(20), // File tree
                 Constraint::Percentage(60), // Output + Input
-                Constraint::Percentage(20), // Agents
+                Constraint::Percentage(20), // Agents + Ralph
             ])
             .split(area);
 
@@ -301,9 +325,31 @@ impl TuiApp {
             .render(frame, center_chunks[1], self.state.focus.is_focused(PanelId::INPUT));
         self.render_status(frame, center_chunks[2]);
 
-        // Agents list (right)
-        self.agents
-            .render(frame, chunks[2], self.state.focus.is_focused(PanelId::AGENTS));
+        // Right sidebar: Agents (top) + Ralph (bottom, if active)
+        let ralph_active = self.service.ralph_is_active()
+            || self.service.ralph_state().map_or(false, |s| {
+                s.status == axiom_core::RalphStatus::Complete
+                    || s.status == axiom_core::RalphStatus::Error
+            });
+
+        if ralph_active {
+            let right_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Percentage(50), // Agents
+                    Constraint::Percentage(50), // Ralph
+                ])
+                .split(chunks[2]);
+
+            self.agents
+                .render(frame, right_chunks[0], self.state.focus.is_focused(PanelId::AGENTS));
+            self.ralph
+                .render(frame, right_chunks[1], self.state.focus.is_focused(PanelId::RALPH));
+        } else {
+            // Just show agents when Ralph is not active
+            self.agents
+                .render(frame, chunks[2], self.state.focus.is_focused(PanelId::AGENTS));
+        }
     }
 
     /// Render status bar

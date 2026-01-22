@@ -3,7 +3,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { axiomApi } from './client';
 import { AxiomWebSocket, createWorkspaceConnection, ConnectionState } from './websocket';
-import type { WorkspaceView, FileEntry, Notification, Command } from './types';
+import type {
+  WorkspaceView,
+  FileEntry,
+  Notification,
+  Command,
+  RalphState,
+  RalphConfig
+} from './types';
 
 // ========== Workspace Hooks ==========
 
@@ -233,5 +240,173 @@ export function useFileContent(workspaceId: string | undefined, filePath: string
     error,
     reload: loadFile,
     saveFile,
+  };
+}
+
+// ========== Ralph Loop Hook ==========
+
+export interface UseRalphLoopOptions {
+  workspaceId: string;
+  onIterationStart?: (iteration: number, task: string) => void;
+  onIterationComplete?: (iteration: number, status: string, summary: string) => void;
+  onLoopComplete?: (totalIterations: number, reason: any) => void;
+  onError?: (error: string) => void;
+}
+
+export function useRalphLoop(options: UseRalphLoopOptions) {
+  const { workspaceId, onIterationStart, onIterationComplete, onLoopComplete, onError } = options;
+
+  const [state, setState] = useState<RalphState | null>(null);
+  const [isStarting, setIsStarting] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Polling interval ref for status updates
+  const pollingRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Fetch current Ralph status
+  const fetchStatus = useCallback(async () => {
+    try {
+      const response = await axiomApi.getRalphStatus(workspaceId);
+      if (response.state) {
+        setState(response.state);
+
+        // Stop polling if loop is complete or errored
+        if (response.state.status === 'Complete' || response.state.status === 'Error') {
+          if (pollingRef.current) {
+            clearInterval(pollingRef.current);
+            pollingRef.current = null;
+          }
+        }
+      }
+    } catch (e: any) {
+      // Silently handle fetch errors during polling
+      console.error('Failed to fetch Ralph status:', e);
+    }
+  }, [workspaceId]);
+
+  // Start Ralph Loop
+  const startLoop = useCallback(async (task: string, config?: Partial<RalphConfig>) => {
+    if (!task.trim()) {
+      setError('Task description is required');
+      return;
+    }
+
+    try {
+      setIsStarting(true);
+      setError(null);
+
+      const response = await axiomApi.startRalphLoop(workspaceId, task, config);
+
+      if (response.success && response.state) {
+        setState(response.state);
+
+        // Start polling for status updates
+        if (!pollingRef.current) {
+          pollingRef.current = setInterval(fetchStatus, 2000);
+        }
+      } else {
+        throw new Error(response.error || 'Failed to start Ralph Loop');
+      }
+    } catch (e: any) {
+      setError(e.message);
+      onError?.(e.message);
+    } finally {
+      setIsStarting(false);
+    }
+  }, [workspaceId, fetchStatus, onError]);
+
+  // Stop Ralph Loop
+  const stopLoop = useCallback(async () => {
+    try {
+      setIsStopping(true);
+      setError(null);
+
+      const response = await axiomApi.stopRalphLoop(workspaceId);
+
+      if (response.success) {
+        await fetchStatus();
+      } else {
+        throw new Error(response.error || 'Failed to stop Ralph Loop');
+      }
+    } catch (e: any) {
+      setError(e.message);
+      onError?.(e.message);
+    } finally {
+      setIsStopping(false);
+    }
+  }, [workspaceId, fetchStatus, onError]);
+
+  // Update feedback for next iteration
+  const updateFeedback = useCallback(async (feedback: string) => {
+    try {
+      setError(null);
+      const response = await axiomApi.updateRalphFeedback(workspaceId, feedback);
+
+      if (!response.success) {
+        throw new Error(response.error || 'Failed to update feedback');
+      }
+    } catch (e: any) {
+      setError(e.message);
+      onError?.(e.message);
+    }
+  }, [workspaceId, onError]);
+
+  // Reset state (for starting a new loop after completion)
+  const reset = useCallback(() => {
+    setState(null);
+    setError(null);
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+  }, []);
+
+  // Initial status fetch and cleanup
+  useEffect(() => {
+    if (workspaceId) {
+      fetchStatus();
+    }
+
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
+    };
+  }, [workspaceId, fetchStatus]);
+
+  // Handle state changes for callbacks
+  useEffect(() => {
+    if (!state) return;
+
+    const lastIteration = state.iteration_history[state.iteration_history.length - 1];
+
+    // Call callbacks based on state changes
+    if (state.status === 'Running' && lastIteration) {
+      onIterationComplete?.(
+        lastIteration.iteration,
+        lastIteration.status,
+        lastIteration.summary
+      );
+    }
+
+    if (state.status === 'Complete' && state.completion_reason) {
+      onLoopComplete?.(state.current_iteration, state.completion_reason);
+    }
+  }, [state, onIterationComplete, onLoopComplete]);
+
+  return {
+    state,
+    isStarting,
+    isStopping,
+    isRunning: state?.status === 'Running',
+    isComplete: state?.status === 'Complete' || state?.status === 'Error',
+    error,
+    startLoop,
+    stopLoop,
+    updateFeedback,
+    refresh: fetchStatus,
+    reset,
   };
 }

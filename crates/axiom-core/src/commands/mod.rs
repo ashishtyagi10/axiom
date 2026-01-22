@@ -5,6 +5,7 @@
 
 pub mod slash;
 
+use crate::ralph::RalphConfig;
 use crate::types::AgentId;
 use crate::workspace::WorkspaceId;
 use serde::{Deserialize, Serialize};
@@ -190,6 +191,39 @@ pub enum Command {
         #[serde(default)]
         include_hidden: bool,
     },
+
+    // ========== Ralph Loop Commands ==========
+
+    /// Start a Ralph Loop for autonomous iterative development
+    ///
+    /// Begins an autonomous development loop that runs iterations until
+    /// the task is complete or limits are reached.
+    StartRalphLoop {
+        /// The task description for the loop
+        task: String,
+
+        /// Configuration for the loop (optional, uses defaults if not provided)
+        #[serde(default)]
+        config: RalphConfig,
+    },
+
+    /// Stop the current Ralph Loop
+    ///
+    /// Gracefully terminates the active loop after the current iteration.
+    StopRalphLoop,
+
+    /// Get the status of the current Ralph Loop
+    ///
+    /// Returns the current state via a RalphStatusUpdate notification.
+    GetRalphStatus,
+
+    /// Provide feedback for the next Ralph Loop iteration
+    ///
+    /// This feedback will be included in the prompt for the next iteration.
+    UpdateRalphFeedback {
+        /// Feedback text for the next iteration
+        feedback: String,
+    },
 }
 
 impl Command {
@@ -283,6 +317,29 @@ impl Command {
     pub fn slash_command(command: slash::SlashCommand) -> Self {
         Command::SlashCommand { command }
     }
+
+    /// Create a StartRalphLoop command with default config
+    pub fn start_ralph_loop(task: impl Into<String>) -> Self {
+        Command::StartRalphLoop {
+            task: task.into(),
+            config: RalphConfig::default(),
+        }
+    }
+
+    /// Create a StartRalphLoop command with custom config
+    pub fn start_ralph_loop_with_config(task: impl Into<String>, config: RalphConfig) -> Self {
+        Command::StartRalphLoop {
+            task: task.into(),
+            config,
+        }
+    }
+
+    /// Create an UpdateRalphFeedback command
+    pub fn update_ralph_feedback(feedback: impl Into<String>) -> Self {
+        Command::UpdateRalphFeedback {
+            feedback: feedback.into(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -317,5 +374,71 @@ mod tests {
         let cmd = Command::send_pty_input(AgentId::new(42), vec![0x1b, 0x5b, 0x41]); // ESC [ A
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains("SendPtyInput"));
+    }
+
+    #[test]
+    fn test_start_ralph_loop_command() {
+        let cmd = Command::start_ralph_loop("implement feature X");
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains("StartRalphLoop"));
+        assert!(json.contains("implement feature X"));
+
+        let parsed: Command = serde_json::from_str(&json).unwrap();
+        match parsed {
+            Command::StartRalphLoop { task, config } => {
+                assert_eq!(task, "implement feature X");
+                assert_eq!(config.max_iterations, 20); // default
+            }
+            _ => panic!("Wrong command type"),
+        }
+    }
+
+    #[test]
+    fn test_start_ralph_loop_with_config() {
+        let config = RalphConfig::default().with_max_iterations(10);
+        let cmd = Command::start_ralph_loop_with_config("fix bugs", config);
+        let json = serde_json::to_string(&cmd).unwrap();
+
+        let parsed: Command = serde_json::from_str(&json).unwrap();
+        match parsed {
+            Command::StartRalphLoop { task, config } => {
+                assert_eq!(task, "fix bugs");
+                assert_eq!(config.max_iterations, 10);
+            }
+            _ => panic!("Wrong command type"),
+        }
+    }
+
+    #[test]
+    fn test_stop_ralph_loop_command() {
+        let cmd = Command::StopRalphLoop;
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains("StopRalphLoop"));
+
+        let parsed: Command = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, Command::StopRalphLoop));
+    }
+
+    #[test]
+    fn test_get_ralph_status_command() {
+        let cmd = Command::GetRalphStatus;
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains("GetRalphStatus"));
+    }
+
+    #[test]
+    fn test_update_ralph_feedback_command() {
+        let cmd = Command::update_ralph_feedback("focus on error handling");
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains("UpdateRalphFeedback"));
+        assert!(json.contains("focus on error handling"));
+
+        let parsed: Command = serde_json::from_str(&json).unwrap();
+        match parsed {
+            Command::UpdateRalphFeedback { feedback } => {
+                assert_eq!(feedback, "focus on error handling");
+            }
+            _ => panic!("Wrong command type"),
+        }
     }
 }

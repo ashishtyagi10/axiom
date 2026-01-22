@@ -18,6 +18,9 @@ impl PanelId {
 
     /// Agents panel (right sidebar, shows spawned agents)
     pub const AGENTS: PanelId = PanelId(3);
+
+    /// Ralph Loop panel (shows Ralph iteration status)
+    pub const RALPH: PanelId = PanelId(4);
 }
 
 /// Focus state management

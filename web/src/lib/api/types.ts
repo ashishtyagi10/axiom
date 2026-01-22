@@ -201,3 +201,60 @@ export type SlashCommandResult =
   | { type: 'Data'; data: SlashCommandData }
   | { type: 'Error'; message: string }
   | { type: 'Exit' };
+
+// ========== Ralph Loop Types ==========
+
+export type RalphStatus = 'Idle' | 'Running' | 'Paused' | 'Complete' | 'Error';
+
+export type IterationStatus = 'Success' | 'Failed' | 'Timeout' | 'Cancelled';
+
+export type CompletionReason =
+  | { type: 'TaskComplete' }
+  | { type: 'MaxIterations' }
+  | { type: 'UserStopped' }
+  | { type: 'CircuitBreaker' }
+  | { type: 'Error'; message: string };
+
+export interface RalphConfig {
+  max_iterations: number;
+  iteration_timeout_secs: number;
+  circuit_breaker_threshold: number;
+  persist_state: boolean;
+}
+
+export interface IterationRecord {
+  iteration: number;
+  status: IterationStatus;
+  summary: string;
+  duration_secs: number;
+  timestamp: number;
+  files_modified: string[];
+  agent_id?: string;
+}
+
+export interface RalphState {
+  task: string;
+  status: RalphStatus;
+  current_iteration: number;
+  config: RalphConfig;
+  iteration_history: IterationRecord[];
+  completion_reason?: CompletionReason;
+  started_at: number;
+  feedback?: string;
+}
+
+// Ralph-specific notifications
+export type RalphNotification =
+  | { type: 'RalphIterationStarted'; iteration: number; task: string }
+  | { type: 'RalphIterationComplete'; iteration: number; status: IterationStatus; summary: string; duration_secs: number }
+  | { type: 'RalphLoopComplete'; total_iterations: number; reason: CompletionReason }
+  | { type: 'RalphLoopError'; iteration: number; error: string }
+  | { type: 'RalphStatusUpdate'; state: RalphState };
+
+// Default Ralph config (mirrors Rust default)
+export const DEFAULT_RALPH_CONFIG: RalphConfig = {
+  max_iterations: 20,
+  iteration_timeout_secs: 300,
+  circuit_breaker_threshold: 3,
+  persist_state: true,
+};

@@ -3,6 +3,7 @@
 //! These notifications inform the UI about state changes in the backend.
 //! They are serializable for web UI integration over WebSocket/gRPC.
 
+use crate::ralph::{CompletionReason, IterationStatus, RalphState};
 use crate::types::{
     AgentId, AgentStatus, AgentType, AgentView, CliAgentInfo, OutputContext, ProviderInfo,
     ProviderStatus, TerminalScreen,
@@ -238,6 +239,63 @@ pub enum Notification {
         /// Files and directories
         entries: Vec<FileEntry>,
     },
+
+    // ========== Ralph Loop Notifications ==========
+
+    /// Ralph Loop iteration started
+    ///
+    /// Emitted at the beginning of each iteration.
+    RalphIterationStarted {
+        /// The iteration number (1-indexed)
+        iteration: u32,
+
+        /// The task being worked on
+        task: String,
+    },
+
+    /// Ralph Loop iteration completed
+    ///
+    /// Emitted when an iteration finishes.
+    RalphIterationComplete {
+        /// The iteration number (1-indexed)
+        iteration: u32,
+
+        /// Summary of work done
+        summary: String,
+
+        /// Status of the iteration
+        status: IterationStatus,
+    },
+
+    /// Ralph Loop completed
+    ///
+    /// Emitted when the loop finishes for any reason.
+    RalphLoopComplete {
+        /// Total iterations executed
+        total_iterations: u32,
+
+        /// Reason the loop completed
+        reason: CompletionReason,
+    },
+
+    /// Ralph Loop error
+    ///
+    /// Emitted when an error occurs during a Ralph Loop iteration.
+    RalphLoopError {
+        /// The iteration where the error occurred
+        iteration: u32,
+
+        /// Error message
+        error: String,
+    },
+
+    /// Ralph Loop status update
+    ///
+    /// Emitted in response to GetRalphStatus command.
+    RalphStatusUpdate {
+        /// Current Ralph Loop state (None if no loop is active)
+        state: Option<RalphState>,
+    },
 }
 
 /// File entry for directory listing
@@ -357,6 +415,48 @@ impl Notification {
     pub fn workspace_activated(workspace: Workspace) -> Self {
         Notification::WorkspaceActivated { workspace }
     }
+
+    /// Create a RalphIterationStarted notification
+    pub fn ralph_iteration_started(iteration: u32, task: impl Into<String>) -> Self {
+        Notification::RalphIterationStarted {
+            iteration,
+            task: task.into(),
+        }
+    }
+
+    /// Create a RalphIterationComplete notification
+    pub fn ralph_iteration_complete(
+        iteration: u32,
+        summary: impl Into<String>,
+        status: IterationStatus,
+    ) -> Self {
+        Notification::RalphIterationComplete {
+            iteration,
+            summary: summary.into(),
+            status,
+        }
+    }
+
+    /// Create a RalphLoopComplete notification
+    pub fn ralph_loop_complete(total_iterations: u32, reason: CompletionReason) -> Self {
+        Notification::RalphLoopComplete {
+            total_iterations,
+            reason,
+        }
+    }
+
+    /// Create a RalphLoopError notification
+    pub fn ralph_loop_error(iteration: u32, error: impl Into<String>) -> Self {
+        Notification::RalphLoopError {
+            iteration,
+            error: error.into(),
+        }
+    }
+
+    /// Create a RalphStatusUpdate notification
+    pub fn ralph_status_update(state: Option<RalphState>) -> Self {
+        Notification::RalphStatusUpdate { state }
+    }
 }
 
 #[cfg(test)]
@@ -395,5 +495,99 @@ mod tests {
         let json = serde_json::to_string(&notif).unwrap();
         assert!(json.contains("Error"));
         assert!(json.contains("Something went wrong"));
+    }
+
+    #[test]
+    fn test_ralph_iteration_started() {
+        let notif = Notification::ralph_iteration_started(1, "Implement feature X");
+        let json = serde_json::to_string(&notif).unwrap();
+        assert!(json.contains("RalphIterationStarted"));
+        assert!(json.contains("Implement feature X"));
+
+        let parsed: Notification = serde_json::from_str(&json).unwrap();
+        match parsed {
+            Notification::RalphIterationStarted { iteration, task } => {
+                assert_eq!(iteration, 1);
+                assert_eq!(task, "Implement feature X");
+            }
+            _ => panic!("Wrong notification type"),
+        }
+    }
+
+    #[test]
+    fn test_ralph_iteration_complete() {
+        let notif =
+            Notification::ralph_iteration_complete(3, "Added unit tests", IterationStatus::Success);
+        let json = serde_json::to_string(&notif).unwrap();
+        assert!(json.contains("RalphIterationComplete"));
+        assert!(json.contains("Added unit tests"));
+        assert!(json.contains("success"));
+
+        let parsed: Notification = serde_json::from_str(&json).unwrap();
+        match parsed {
+            Notification::RalphIterationComplete {
+                iteration,
+                summary,
+                status,
+            } => {
+                assert_eq!(iteration, 3);
+                assert_eq!(summary, "Added unit tests");
+                assert_eq!(status, IterationStatus::Success);
+            }
+            _ => panic!("Wrong notification type"),
+        }
+    }
+
+    #[test]
+    fn test_ralph_loop_complete() {
+        let notif = Notification::ralph_loop_complete(5, CompletionReason::TaskComplete);
+        let json = serde_json::to_string(&notif).unwrap();
+        assert!(json.contains("RalphLoopComplete"));
+        assert!(json.contains("taskComplete"));
+
+        let parsed: Notification = serde_json::from_str(&json).unwrap();
+        match parsed {
+            Notification::RalphLoopComplete {
+                total_iterations,
+                reason,
+            } => {
+                assert_eq!(total_iterations, 5);
+                assert_eq!(reason, CompletionReason::TaskComplete);
+            }
+            _ => panic!("Wrong notification type"),
+        }
+    }
+
+    #[test]
+    fn test_ralph_loop_error() {
+        let notif = Notification::ralph_loop_error(2, "Agent execution failed");
+        let json = serde_json::to_string(&notif).unwrap();
+        assert!(json.contains("RalphLoopError"));
+        assert!(json.contains("Agent execution failed"));
+
+        let parsed: Notification = serde_json::from_str(&json).unwrap();
+        match parsed {
+            Notification::RalphLoopError { iteration, error } => {
+                assert_eq!(iteration, 2);
+                assert_eq!(error, "Agent execution failed");
+            }
+            _ => panic!("Wrong notification type"),
+        }
+    }
+
+    #[test]
+    fn test_ralph_status_update_none() {
+        let notif = Notification::ralph_status_update(None);
+        let json = serde_json::to_string(&notif).unwrap();
+        assert!(json.contains("RalphStatusUpdate"));
+        assert!(json.contains("null"));
+
+        let parsed: Notification = serde_json::from_str(&json).unwrap();
+        match parsed {
+            Notification::RalphStatusUpdate { state } => {
+                assert!(state.is_none());
+            }
+            _ => panic!("Wrong notification type"),
+        }
     }
 }

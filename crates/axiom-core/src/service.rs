@@ -43,6 +43,10 @@ use crate::error::{AxiomError, Result};
 use crate::events::Event;
 use crate::llm::ProviderRegistry;
 use crate::notifications::Notification;
+use crate::ralph::{
+    AgentInvoker, CancellationToken, CliAgentInvoker, CompletionReason, RalphConfig, RalphExecutor,
+    RalphState,
+};
 use crate::types::{
     AgentId, AgentSpawnRequest, AgentStatus, AgentType, AgentView, CliAgentInfo, OutputContext,
     TerminalScreen,
@@ -51,6 +55,7 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use parking_lot::RwLock;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 /// Main backend service facade
@@ -93,6 +98,15 @@ pub struct AxiomService {
 
     /// Current output context
     output_context: Arc<RwLock<OutputContext>>,
+
+    /// Ralph Loop executor (if running)
+    ralph_executor: Arc<RwLock<Option<RalphExecutor>>>,
+
+    /// Ralph Loop cancellation token
+    ralph_cancel_token: Arc<RwLock<Option<CancellationToken>>>,
+
+    /// Ralph Loop thread handle
+    ralph_thread: Arc<RwLock<Option<thread::JoinHandle<()>>>>,
 }
 
 impl AxiomService {
@@ -146,6 +160,9 @@ impl AxiomService {
             cwd,
             config,
             output_context: Arc::new(RwLock::new(OutputContext::Empty)),
+            ralph_executor: Arc::new(RwLock::new(None)),
+            ralph_cancel_token: Arc::new(RwLock::new(None)),
+            ralph_thread: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -299,6 +316,20 @@ impl AxiomService {
                 let _ = self.notification_tx.send(Notification::Info {
                     message: format!("SlashCommand: {}", command.name()),
                 });
+            }
+
+            // Ralph Loop commands
+            Command::StartRalphLoop { task, config } => {
+                self.start_ralph_loop(task, config)?;
+            }
+            Command::StopRalphLoop => {
+                self.stop_ralph_loop()?;
+            }
+            Command::GetRalphStatus => {
+                self.send_ralph_status()?;
+            }
+            Command::UpdateRalphFeedback { feedback } => {
+                self.update_ralph_feedback(feedback)?;
             }
         }
         Ok(())
@@ -654,6 +685,9 @@ impl AxiomService {
     }
 
     fn shutdown(&mut self) -> Result<()> {
+        // Stop Ralph Loop if running
+        let _ = self.stop_ralph_loop();
+
         // Clean up PTY sessions
         {
             let mut manager = self.pty_manager.write();
@@ -663,6 +697,183 @@ impl AxiomService {
         }
 
         Ok(())
+    }
+
+    // ========== Ralph Loop methods ==========
+
+    /// Start a Ralph Loop with the given task and configuration
+    fn start_ralph_loop(&mut self, task: String, config: RalphConfig) -> Result<()> {
+        // Check if already running
+        {
+            let executor = self.ralph_executor.read();
+            if let Some(ref exec) = *executor {
+                if exec.state().status.is_active() {
+                    return Err(AxiomError::invalid_operation(
+                        "Ralph Loop is already running",
+                    ));
+                }
+            }
+        }
+
+        // Create new state and executor
+        let state = RalphState::new(task.clone(), config, self.cwd.clone());
+
+        // Create the agent invoker (uses CLI agents)
+        let invoker: Arc<dyn AgentInvoker> =
+            Arc::new(CliAgentInvoker::new("claude", self.cwd.clone()));
+
+        // Create the executor
+        let executor = RalphExecutor::new(state, self.notification_tx.clone(), invoker);
+        let cancel_token = executor.cancel_token();
+
+        // Store executor and cancel token
+        *self.ralph_executor.write() = Some(executor);
+        *self.ralph_cancel_token.write() = Some(cancel_token.clone());
+
+        // Get a reference to the executor for the thread
+        let executor_ref = self.ralph_executor.clone();
+        let notification_tx = self.notification_tx.clone();
+
+        // Start the loop in a background thread
+        let handle = thread::spawn(move || {
+            // Get the executor (it should be set by now)
+            let executor = {
+                let lock = executor_ref.read();
+                if lock.is_none() {
+                    return;
+                }
+                // We can't easily extract a reference here, so we'll read from the lock
+                drop(lock);
+                executor_ref.clone()
+            };
+
+            // Run the loop
+            loop {
+                // Check if executor still exists and run one iteration
+                let should_continue = {
+                    let lock = executor.read();
+                    if let Some(ref exec) = *lock {
+                        // Check cancellation
+                        if exec.cancel_token().is_cancelled() {
+                            false
+                        } else if !exec.state().should_continue() {
+                            false
+                        } else {
+                            // Run one iteration
+                            drop(lock);
+                            let lock = executor.write();
+                            if let Some(ref exec) = *lock {
+                                let result = exec.run_iteration();
+                                if result.is_err() {
+                                    false
+                                } else {
+                                    exec.state().should_continue()
+                                }
+                            } else {
+                                false
+                            }
+                        }
+                    } else {
+                        false
+                    }
+                };
+
+                if !should_continue {
+                    // Get completion reason and emit notification
+                    let lock = executor.read();
+                    if let Some(ref exec) = *lock {
+                        let state = exec.state();
+                        let reason = state
+                            .completion_reason
+                            .clone()
+                            .unwrap_or(CompletionReason::MaxIterations);
+                        let total = state.completed_iterations();
+                        let _ = notification_tx
+                            .send(Notification::ralph_loop_complete(total, reason));
+                    }
+                    break;
+                }
+            }
+        });
+
+        *self.ralph_thread.write() = Some(handle);
+
+        // Emit start notification
+        let _ = self.notification_tx.send(Notification::Info {
+            message: format!("Ralph Loop started: {}", task),
+        });
+
+        Ok(())
+    }
+
+    /// Stop the Ralph Loop
+    fn stop_ralph_loop(&mut self) -> Result<()> {
+        // Cancel via token
+        {
+            let token = self.ralph_cancel_token.read();
+            if let Some(ref t) = *token {
+                t.cancel();
+            }
+        }
+
+        // Wait for thread to finish (with timeout)
+        let handle = self.ralph_thread.write().take();
+        if let Some(h) = handle {
+            // Give it a moment to finish
+            let _ = h.join();
+        }
+
+        // Clear executor and token
+        *self.ralph_executor.write() = None;
+        *self.ralph_cancel_token.write() = None;
+
+        let _ = self.notification_tx.send(Notification::Info {
+            message: "Ralph Loop stopped".into(),
+        });
+
+        Ok(())
+    }
+
+    /// Send Ralph status as a notification
+    fn send_ralph_status(&self) -> Result<()> {
+        let executor = self.ralph_executor.read();
+        let state = executor.as_ref().map(|e| e.state());
+
+        let _ = self
+            .notification_tx
+            .send(Notification::RalphStatusUpdate { state });
+
+        Ok(())
+    }
+
+    /// Update feedback for the next Ralph iteration
+    fn update_ralph_feedback(&self, feedback: String) -> Result<()> {
+        let executor = self.ralph_executor.read();
+        if let Some(ref exec) = *executor {
+            exec.set_feedback(feedback.clone());
+            let _ = self.notification_tx.send(Notification::Info {
+                message: format!("Ralph feedback updated: {}", feedback),
+            });
+            Ok(())
+        } else {
+            Err(AxiomError::invalid_operation(
+                "No Ralph Loop is currently running",
+            ))
+        }
+    }
+
+    /// Get the current Ralph Loop state (for direct access)
+    pub fn ralph_state(&self) -> Option<RalphState> {
+        let executor = self.ralph_executor.read();
+        executor.as_ref().map(|e| e.state())
+    }
+
+    /// Check if Ralph Loop is active
+    pub fn ralph_is_active(&self) -> bool {
+        let executor = self.ralph_executor.read();
+        executor
+            .as_ref()
+            .map_or(false, |e| e.state().status.is_active())
     }
 
     // ========== Internal event handlers ==========
@@ -877,5 +1088,31 @@ mod tests {
         let agents = service.cli_agents();
         // Default config has claude and gemini enabled
         assert!(!agents.is_empty());
+    }
+
+    #[test]
+    fn test_ralph_initial_state() {
+        let config = AxiomConfig::default();
+        let cwd = std::env::current_dir().unwrap();
+        let service = AxiomService::new(config, cwd).unwrap();
+
+        // Ralph should not be active initially
+        assert!(!service.ralph_is_active());
+        assert!(service.ralph_state().is_none());
+    }
+
+    #[test]
+    fn test_ralph_get_status_when_not_running() {
+        let config = AxiomConfig::default();
+        let cwd = std::env::current_dir().unwrap();
+        let service = AxiomService::new(config, cwd).unwrap();
+
+        // Getting status when not running should send a notification with None state
+        service.send_ralph_status().unwrap();
+
+        // Check we got a notification
+        if let Some(notif) = service.poll_notification() {
+            assert!(matches!(notif, Notification::RalphStatusUpdate { state: None }));
+        }
     }
 }

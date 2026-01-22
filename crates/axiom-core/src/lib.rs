@@ -62,6 +62,9 @@ pub mod workspace;
 // Agent orchestration system
 pub mod orchestration;
 
+// Ralph Loop - autonomous iterative development
+pub mod ralph;
+
 // Re-export commonly used types
 pub use commands::Command;
 pub use commands::slash::{
@@ -94,6 +97,12 @@ pub use llm::{
 pub use orchestration::{
     AgentRole, DeveloperResponse, LlmSettings, NextAgent, OperationResult, OrchestratorDecision,
     OrchestrationService, ProviderConfigUpdate,
+};
+
+// Re-export Ralph Loop types
+pub use ralph::{
+    AgentInvoker, CancellationToken, CliAgentInvoker, CompletionReason, IterationRecord,
+    IterationStatus, RalphConfig, RalphError, RalphExecutor, RalphResult, RalphState, RalphStatus,
 };
 
 // Agent system

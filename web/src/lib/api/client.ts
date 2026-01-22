@@ -10,6 +10,8 @@ import type {
   FileEntry,
   CommandResult,
   ApiResponse,
+  RalphState,
+  RalphConfig,
 } from './types';
 
 // Default to localhost in development, can be configured for production
@@ -272,6 +274,43 @@ class AxiomApiClient {
     return this.fetch(`/api/workspaces/${workspaceId}/slash`, {
       method: 'POST',
       body: JSON.stringify({ command }),
+    });
+  }
+
+  // ========== Ralph Loop Operations ==========
+
+  async startRalphLoop(
+    workspaceId: string,
+    task: string,
+    config?: Partial<RalphConfig>
+  ): Promise<{ success: boolean; state?: RalphState; error?: string }> {
+    return this.fetch(`/api/workspaces/${workspaceId}/ralph`, {
+      method: 'POST',
+      body: JSON.stringify({ task, config }),
+    });
+  }
+
+  async stopRalphLoop(
+    workspaceId: string
+  ): Promise<{ success: boolean; error?: string }> {
+    return this.fetch(`/api/workspaces/${workspaceId}/ralph/stop`, {
+      method: 'POST',
+    });
+  }
+
+  async getRalphStatus(
+    workspaceId: string
+  ): Promise<{ state?: RalphState; error?: string }> {
+    return this.fetch(`/api/workspaces/${workspaceId}/ralph`);
+  }
+
+  async updateRalphFeedback(
+    workspaceId: string,
+    feedback: string
+  ): Promise<{ success: boolean; error?: string }> {
+    return this.fetch(`/api/workspaces/${workspaceId}/ralph/feedback`, {
+      method: 'POST',
+      body: JSON.stringify({ feedback }),
     });
   }
 }

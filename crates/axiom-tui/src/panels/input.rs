@@ -3,7 +3,7 @@
 use super::Panel;
 use crate::events::TuiEvent;
 use crate::state::{AppState, PanelId};
-use axiom_core::{Command, Result};
+use axiom_core::{Command, RalphConfig, Result};
 use crossbeam_channel::Sender;
 use crossterm::event::KeyCode;
 use ratatui::{
@@ -64,15 +64,39 @@ impl InputPanel {
                 command: text[1..].to_string(),
             }
         } else if text.starts_with('#') {
-            // CLI agent invocation
-            let parts: Vec<&str> = text[1..].splitn(2, ' ').collect();
-            if !parts.is_empty() {
-                Command::InvokeCliAgent {
-                    agent_id: parts[0].to_string(),
-                    prompt: parts.get(1).unwrap_or(&"").to_string(),
+            // Check for Ralph Loop commands first
+            if text == "#ralph-stop" {
+                Command::StopRalphLoop
+            } else if text == "#ralph-status" {
+                Command::GetRalphStatus
+            } else if text.starts_with("#ralph ") {
+                // Start Ralph Loop with the task description
+                let task = text[7..].trim().to_string();
+                if task.is_empty() {
+                    return;
                 }
+                Command::StartRalphLoop {
+                    task,
+                    config: RalphConfig::default(),
+                }
+            } else if text.starts_with("#ralph-feedback ") {
+                // Update Ralph Loop feedback
+                let feedback = text[16..].trim().to_string();
+                if feedback.is_empty() {
+                    return;
+                }
+                Command::UpdateRalphFeedback { feedback }
             } else {
-                return;
+                // CLI agent invocation
+                let parts: Vec<&str> = text[1..].splitn(2, ' ').collect();
+                if !parts.is_empty() {
+                    Command::InvokeCliAgent {
+                        agent_id: parts[0].to_string(),
+                        prompt: parts.get(1).unwrap_or(&"").to_string(),
+                    }
+                } else {
+                    return;
+                }
             }
         } else {
             // Regular text to conductor
@@ -156,7 +180,7 @@ impl Panel for InputPanel {
 
     fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
         let block = Block::default()
-            .title(" Input (# agent, ! shell) ")
+            .title(" Input (#ralph, #agent, !shell) ")
             .borders(Borders::ALL)
             .border_style(if focused {
                 Style::default().fg(Color::Cyan)

@@ -37,6 +37,10 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { AgentState, AgentRole } from '@/lib/agents/types';
 import { LLMMessage } from '@/lib/llm/api';
+import { RalphPanel } from '@/components/RalphPanel';
+import { startRalphLoopAction, stopRalphLoopAction, getRalphStatusAction, updateRalphFeedbackAction } from '@/app/actions/ralph';
+import type { RalphState } from '@/lib/api/types';
+import { Zap } from 'lucide-react';
 
 export default function WorkspaceStudio() {
   const params = useParams();
@@ -58,9 +62,13 @@ export default function WorkspaceStudio() {
   const [isMobileTeamOpen, setIsMobileTeamOpen] = useState(false);
 
   // Right Panel State
-  const [rightPanelMode, setRightPanelMode] = useState<'team' | 'terminal'>('team');
+  const [rightPanelMode, setRightPanelMode] = useState<'team' | 'terminal' | 'ralph'>('team');
   const [terminalOutput, setTerminalOutput] = useState<string>('');
   const [isTerminalRunning, setIsTerminalRunning] = useState(false);
+
+  // Ralph Loop State
+  const [ralphState, setRalphState] = useState<RalphState | null>(null);
+  const [isRalphStarting, setIsRalphStarting] = useState(false);
 
   // Agent State
   const [agentStates, setAgentStates] = useState<Record<AgentRole, AgentState>>({
@@ -107,6 +115,89 @@ export default function WorkspaceStudio() {
     }));
   };
 
+  // Ralph Loop handlers
+  const fetchRalphStatus = async () => {
+    if (!workspaceId) return;
+    try {
+      const result = await getRalphStatusAction(workspaceId);
+      if (result.state) {
+        setRalphState(result.state);
+      }
+    } catch (error) {
+      console.error('Failed to fetch Ralph status:', error);
+    }
+  };
+
+  const handleStartRalphLoop = async (task: string) => {
+    if (!task.trim()) return;
+
+    setIsRalphStarting(true);
+    try {
+      const result = await startRalphLoopAction(workspaceId, task);
+      if (result.success && result.state) {
+        setRalphState(result.state);
+        setRightPanelMode('ralph');
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: `**Ralph Loop Started**\n\nTask: ${task}\n\nRalph will iterate autonomously until the task is complete or limits are reached.`
+        }]);
+      } else {
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: `**Error starting Ralph Loop**: ${result.error || 'Unknown error'}`
+        }]);
+      }
+    } catch (error) {
+      console.error('Failed to start Ralph Loop:', error);
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: `**Error**: ${error instanceof Error ? error.message : 'Failed to start Ralph Loop'}`
+      }]);
+    } finally {
+      setIsRalphStarting(false);
+    }
+  };
+
+  const handleStopRalphLoop = async () => {
+    try {
+      const result = await stopRalphLoopAction(workspaceId);
+      if (result.success) {
+        await fetchRalphStatus();
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: '**Ralph Loop Stopped**\n\nThe loop has been stopped by user request.'
+        }]);
+      }
+    } catch (error) {
+      console.error('Failed to stop Ralph Loop:', error);
+    }
+  };
+
+  const handleUpdateRalphFeedback = async (feedback: string) => {
+    try {
+      await updateRalphFeedbackAction(workspaceId, feedback);
+    } catch (error) {
+      console.error('Failed to update Ralph feedback:', error);
+    }
+  };
+
+  // Poll Ralph status when running
+  useEffect(() => {
+    if (!workspaceId) return;
+
+    // Initial fetch
+    fetchRalphStatus();
+
+    // Poll while Ralph is running
+    const interval = setInterval(() => {
+      if (ralphState?.status === 'Running') {
+        fetchRalphStatus();
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [workspaceId, ralphState?.status]);
+
   // Handle slash commands (e.g., /help, /clear, /init)
   const handleSlashCommand = async (command: string) => {
     console.log('[SlashCommand] Handler called with:', command);
@@ -139,7 +230,9 @@ export default function WorkspaceStudio() {
         setMessages(prev => [...prev, { role: 'assistant', content: 'Closing workspace...' }]);
         // Small delay for visual feedback, then navigate
         setTimeout(() => {
-          router.push('/');
+          console.log('[SlashCommand] Navigating to hub...');
+          // Use window.location for reliable navigation
+          window.location.href = '/';
         }, 500);
         break;
 
@@ -548,34 +641,46 @@ export default function WorkspaceStudio() {
         )}
 
         {/* Desktop Right Panel (Docked) */}
-        <section 
+        <section
           className={cn(
             "hidden lg:flex flex-col bg-surface rounded-2xl overflow-hidden transition-all duration-300 ease-in-out z-[70] shrink-0",
             showRightPanel ? "w-96" : "w-16"
           )}
         >
-          <RightPanelContent 
+          <RightPanelContent
             collapsed={!showRightPanel}
             onToggle={() => setShowRightPanel(!showRightPanel)}
             mode={rightPanelMode}
+            onModeChange={setRightPanelMode}
             agentStates={agentStates}
             terminalOutput={terminalOutput}
+            ralphState={ralphState}
+            isRalphStarting={isRalphStarting}
+            onStartRalph={handleStartRalphLoop}
+            onStopRalph={handleStopRalphLoop}
+            onUpdateRalphFeedback={handleUpdateRalphFeedback}
           />
         </section>
 
         {/* Mobile Right Panel (Overlay) */}
-        <section 
+        <section
           className={cn(
             "lg:hidden fixed inset-y-2 right-2 flex-col bg-surface rounded-2xl overflow-hidden transition-transform duration-300 ease-in-out z-[70] w-80 shadow-2xl",
             isMobileTeamOpen ? "translate-x-0" : "translate-x-[110%]"
           )}
         >
-          <RightPanelContent 
+          <RightPanelContent
             collapsed={false}
             onToggle={() => setIsMobileTeamOpen(false)}
             mode={rightPanelMode}
+            onModeChange={setRightPanelMode}
             agentStates={agentStates}
             terminalOutput={terminalOutput}
+            ralphState={ralphState}
+            isRalphStarting={isRalphStarting}
+            onStartRalph={handleStartRalphLoop}
+            onStopRalph={handleStopRalphLoop}
+            onUpdateRalphFeedback={handleUpdateRalphFeedback}
             isMobile
           />
         </section>
@@ -622,7 +727,33 @@ function LeftPanelContent({ collapsed, onToggle, isLoading, files, workspaceId, 
   );
 }
 
-function RightPanelContent({ collapsed, onToggle, mode, agentStates, terminalOutput, isMobile }: any) {
+function RightPanelContent({
+  collapsed,
+  onToggle,
+  mode,
+  onModeChange,
+  agentStates,
+  terminalOutput,
+  ralphState,
+  isRalphStarting,
+  onStartRalph,
+  onStopRalph,
+  onUpdateRalphFeedback,
+  isMobile
+}: {
+  collapsed: boolean;
+  onToggle: () => void;
+  mode: 'team' | 'terminal' | 'ralph';
+  onModeChange: (mode: 'team' | 'terminal' | 'ralph') => void;
+  agentStates: Record<AgentRole, AgentState>;
+  terminalOutput: string;
+  ralphState: RalphState | null;
+  isRalphStarting: boolean;
+  onStartRalph: (task: string) => void;
+  onStopRalph: () => void;
+  onUpdateRalphFeedback: (feedback: string) => void;
+  isMobile?: boolean;
+}) {
   if (collapsed) {
     return (
       <div className="flex flex-col items-center py-4 gap-4 h-full bg-surface-container/50">
@@ -630,28 +761,75 @@ function RightPanelContent({ collapsed, onToggle, mode, agentStates, terminalOut
           <PanelRight size={20} />
         </button>
         <div className="w-8 h-1 bg-outline-variant rounded-full" />
-        <button className="p-2 rounded-full hover:bg-surface-container text-primary transition-colors" title="Team">
+        <button
+          onClick={() => { onToggle(); onModeChange('team'); }}
+          className={cn("p-2 rounded-full hover:bg-surface-container transition-colors", mode === 'team' ? "text-primary" : "text-outline")}
+          title="Team"
+        >
           <Bot size={20} />
+        </button>
+        <button
+          onClick={() => { onToggle(); onModeChange('ralph'); }}
+          className={cn("p-2 rounded-full hover:bg-surface-container transition-colors", mode === 'ralph' ? "text-primary" : "text-outline", ralphState?.status === 'Running' && "animate-pulse")}
+          title="Ralph Loop"
+        >
+          <Zap size={20} />
         </button>
       </div>
     );
   }
 
+  const modeIcons = {
+    team: <Bot size={18} className="text-primary" />,
+    terminal: <Terminal size={18} className="text-secondary" />,
+    ralph: <Zap size={18} className="text-primary" />
+  };
+
+  const modeLabels = {
+    team: 'Team',
+    terminal: 'Terminal',
+    ralph: 'Ralph Loop'
+  };
+
   return (
-    <>
-      <div className="flex items-center justify-between p-4 border-b border-outline-variant min-w-[320px]">
-        <div className="flex items-center gap-2">
-          {mode === 'team' ? <Bot size={20} className="text-primary" /> : <Terminal size={20} className="text-secondary" />}
-          <h2 className="font-medium text-foreground">{mode === 'team' ? 'Team' : 'Terminal'}</h2>
+    <div className="flex flex-col h-full">
+      {/* Header with mode tabs */}
+      <div className="flex items-center justify-between p-2 border-b border-outline-variant min-w-[320px]">
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => onModeChange('team')}
+            className={cn(
+              "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+              mode === 'team' ? "bg-primary-container text-on-primary-container" : "text-outline hover:bg-surface-container"
+            )}
+          >
+            <Bot size={16} />
+            <span className="hidden sm:inline">Team</span>
+          </button>
+          <button
+            onClick={() => onModeChange('ralph')}
+            className={cn(
+              "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+              mode === 'ralph' ? "bg-primary-container text-on-primary-container" : "text-outline hover:bg-surface-container",
+              ralphState?.status === 'Running' && mode !== 'ralph' && "animate-pulse"
+            )}
+          >
+            <Zap size={16} />
+            <span className="hidden sm:inline">Ralph</span>
+            {ralphState?.status === 'Running' && (
+              <span className="w-2 h-2 bg-primary rounded-full animate-pulse" />
+            )}
+          </button>
         </div>
         <button onClick={onToggle} className="p-2 hover:bg-surface-container rounded-full text-outline transition-colors">
           {isMobile ? <X size={20} /> : <PanelRight size={20} />}
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 min-w-[320px]">
-        {mode === 'team' ? (
-          <div className="space-y-6">
+      {/* Content */}
+      <div className="flex-1 overflow-hidden">
+        {mode === 'team' && (
+          <div className="h-full overflow-y-auto p-4 space-y-6">
             <div className="p-5 bg-surface-container-high rounded-2xl border border-outline-variant">
               <h3 className="font-medium text-foreground mb-4">Orchestrator</h3>
               <p className="text-sm text-outline leading-relaxed">{agentStates.orchestrator.lastMessage || "Ready."}</p>
@@ -662,13 +840,27 @@ function RightPanelContent({ collapsed, onToggle, mode, agentStates, terminalOut
               <AgentCard state={agentStates.developer} icon={<Bot size={16} />} />
             </div>
           </div>
-        ) : (
-          <div className="h-full bg-[#1e1e1e] rounded-xl p-4 font-mono text-[10px] text-white overflow-auto whitespace-pre-wrap">
-            {terminalOutput}
+        )}
+
+        {mode === 'terminal' && (
+          <div className="h-full p-4">
+            <div className="h-full bg-[#1e1e1e] rounded-xl p-4 font-mono text-[10px] text-white overflow-auto whitespace-pre-wrap">
+              {terminalOutput}
+            </div>
           </div>
         )}
+
+        {mode === 'ralph' && (
+          <RalphPanel
+            state={ralphState}
+            isStarting={isRalphStarting}
+            onStart={onStartRalph}
+            onStop={onStopRalph}
+            onUpdateFeedback={onUpdateRalphFeedback}
+          />
+        )}
       </div>
-    </>
+    </div>
   );
 }
 
