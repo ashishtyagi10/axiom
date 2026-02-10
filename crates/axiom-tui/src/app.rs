@@ -3,16 +3,16 @@
 //! This is the bridge between the TUI layer and the backend.
 //! It handles terminal events, sends Commands, and reacts to Notifications.
 
-use axiom_core::{AxiomConfig, AxiomService, Command, Notification, OutputContext, Result};
+use axiom_core::{AxiomConfig, AxiomService, Command, Notification, OutputContext, RalphConfig, Result};
 use crossterm::event::{self, Event as CrosstermEvent, KeyCode, KeyModifiers};
 use ratatui::prelude::*;
-use ratatui::widgets::{Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::events::TuiEvent;
 use crate::panels::{AgentsPanel, FileTreePanel, InputPanel, OutputPanel, Panel, RalphPanel};
-use crate::state::{AppState, MessageLevel, PanelId};
+use crate::state::{AppState, InputMode, MessageLevel, PanelId};
 
 /// Main TUI application
 ///
@@ -128,6 +128,41 @@ impl TuiApp {
             return Ok(true);
         }
 
+        // Handle Command mode input globally (before panel dispatch)
+        if let InputMode::Command { ref mut query } = self.state.input_mode {
+            match key.code {
+                KeyCode::Esc => {
+                    // Cancel command mode
+                    self.state.input_mode.to_normal();
+                    return Ok(false);
+                }
+                KeyCode::Enter => {
+                    // Execute the command
+                    let cmd = query.clone();
+                    self.state.input_mode.to_normal();
+                    self.execute_command(&cmd)?;
+                    return Ok(false);
+                }
+                KeyCode::Backspace => {
+                    // Remove last character
+                    query.pop();
+                    return Ok(false);
+                }
+                KeyCode::Char(c) => {
+                    // Append character to query
+                    query.push(c);
+                    return Ok(false);
+                }
+                _ => return Ok(false),
+            }
+        }
+
+        // Global "/" handler: enter Command mode from Normal mode
+        if key.code == KeyCode::Char('/') && self.state.input_mode == InputMode::Normal {
+            self.state.input_mode.open_command();
+            return Ok(false);
+        }
+
         // Tab to cycle focus
         if key.code == KeyCode::Tab && !self.state.input_mode.is_editing() {
             self.state.focus.next();
@@ -221,6 +256,57 @@ impl TuiApp {
         self.input.on_resize(cols, rows);
         self.agents.on_resize(cols, rows);
         self.ralph.on_resize(cols, rows);
+        Ok(())
+    }
+
+    /// Execute a global command from command mode
+    fn execute_command(&mut self, query: &str) -> Result<()> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(());
+        }
+
+        // Parse command and arguments
+        let parts: Vec<&str> = query.splitn(2, ' ').collect();
+        let cmd = parts[0];
+        let args = parts.get(1).map(|s| s.trim()).unwrap_or("");
+
+        match cmd {
+            "ralph" => {
+                if args.is_empty() {
+                    self.state.error("Usage: /ralph <task description>");
+                } else {
+                    self.service.send(Command::StartRalphLoop {
+                        task: args.to_string(),
+                        config: RalphConfig::default(),
+                    })?;
+                    self.state.focus.focus(PanelId::RALPH);
+                    self.state.info(format!("Starting Ralph Loop: {}", args));
+                }
+            }
+            "ralph-stop" => {
+                self.service.send(Command::StopRalphLoop)?;
+                self.state.info("Stopping Ralph Loop...");
+            }
+            "ralph-status" => {
+                self.service.send(Command::GetRalphStatus)?;
+                self.state.focus.focus(PanelId::RALPH);
+            }
+            "ralph-feedback" => {
+                if args.is_empty() {
+                    self.state.error("Usage: /ralph-feedback <feedback message>");
+                } else {
+                    self.service.send(Command::UpdateRalphFeedback {
+                        feedback: args.to_string(),
+                    })?;
+                    self.state.info("Feedback added for next iteration");
+                }
+            }
+            _ => {
+                self.state.error(format!("Unknown command: /{}", cmd));
+            }
+        }
+
         Ok(())
     }
 
@@ -349,6 +435,48 @@ impl TuiApp {
             // Just show agents when Ralph is not active
             self.agents
                 .render(frame, chunks[2], self.state.focus.is_focused(PanelId::AGENTS));
+        }
+
+        // Render command line overlay when in Command mode (on top of everything)
+        self.render_command_line(frame, area);
+    }
+
+    /// Render command line overlay when in Command mode
+    fn render_command_line(&self, frame: &mut Frame, area: Rect) {
+        if let InputMode::Command { ref query } = self.state.input_mode {
+            // Create a command line area at the bottom of the screen
+            let cmd_area = Rect {
+                x: area.x,
+                y: area.y + area.height.saturating_sub(3),
+                width: area.width,
+                height: 3,
+            };
+
+            // Clear the area and draw the command line
+            frame.render_widget(Clear, cmd_area);
+
+            let block = Block::default()
+                .title(" Command ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow));
+
+            let inner = block.inner(cmd_area);
+
+            let text = Line::from(vec![
+                Span::styled("/", Style::default().fg(Color::Yellow)),
+                Span::raw(query),
+                Span::styled("█", Style::default().fg(Color::Yellow)),
+            ]);
+
+            frame.render_widget(block, cmd_area);
+            frame.render_widget(Paragraph::new(text), inner);
+
+            // Position cursor at end of input
+            let cursor_x = inner.x + 1 + query.len() as u16;
+            let cursor_y = inner.y;
+            if cursor_x < inner.x + inner.width {
+                frame.set_cursor_position((cursor_x, cursor_y));
+            }
         }
     }
 
