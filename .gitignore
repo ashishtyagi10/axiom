@@ -32,3 +32,6 @@ firebase-debug.log
 
 # Local Claude Code settings
 .claude/settings.local.json
+
+# Ralph Loop session state
+.ralph/
